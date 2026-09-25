@@ -39,6 +39,10 @@ export const readyResponseSchema = z
     .object({ status: z.string().openapi({ example: "ready" }) })
     .passthrough()
     .openapi("ReadyResponse");
+export const healthResponseSchema = z
+    .object({ status: z.string().openapi({ example: "ok" }) })
+    .passthrough()
+    .openapi("HealthResponse");
 export const configResponseSchema = z
     .object({
     networkPassphrase: z.string(),
@@ -996,12 +1000,5 @@ export const openApiSpec = {
         replaySafe: "remediation uses idempotencyKey; duplicates return 409",
     },
 };
-export const ENDPOINTS = Object.entries(openApiSpec.paths).flatMap(([path, operations]) => Object.keys(operations).map((method) => ({
-    method,
-    path,
-})));
-export function buildOpenApiDocument() {
-    return openApiSpec;
-}
 export default openApiSpec;
 //# sourceMappingURL=openapi.js.map

@@ -58,6 +58,13 @@ export declare const config: {
     readonly bridgeContractId: string | undefined;
     readonly circuitRegistryContractId: string | undefined;
     readonly rewardsContractId: string | undefined;
+    readonly treasuryContractId: string | undefined;
+    readonly usdcIssuer: string;
+    readonly eurcIssuer: string;
+    readonly horizonUrl: string;
+    readonly anchorUsdcUrl: string;
+    readonly anchorEurcUrl: string;
+    readonly soroswapApi: string;
     readonly staticVkVersion: number | undefined;
     readonly corsOrigins: string[];
     readonly corsAllowedMethods: string[];

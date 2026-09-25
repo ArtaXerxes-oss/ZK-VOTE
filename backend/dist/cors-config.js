@@ -8,8 +8,9 @@ import { config } from "./config.js";
  */
 export function getAllowedOrigins(input) {
     if (input === undefined) {
-        if (config?.corsOrigin) {
-            return getAllowedOrigins(config.corsOrigin);
+        const corsOrigins = config?.corsOrigins ?? config?.corsOrigin;
+        if (corsOrigins) {
+            return getAllowedOrigins(corsOrigins);
         }
         return ["*"];
     }

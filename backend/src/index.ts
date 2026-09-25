@@ -371,6 +371,7 @@ const v1Router = express.Router();
 function mountV1(): void {
   v1Router.use(metricsRoutes);
   v1Router.use(healthRoutes);
+  v1Router.use(analyticsRoutes);
   v1Router.use(remediationRoutes);
   v1Router.use(noStore, votingRoutes);
   v1Router.use(daoRoutes);
@@ -381,6 +382,7 @@ function mountV1(): void {
   v1Router.use(bridgeRoutes);
   v1Router.use(circuitRoutes);
   v1Router.use(transactionRoutes);
+  v1Router.use(authRoutes);
   v1Router.use(quadraticRoutes);
   v1Router.use(noStore, adminRoutes);
   v1Router.use(noStore, thresholdRoutes);
@@ -393,6 +395,41 @@ function mountV1(): void {
 
 mountV1();
 app.use("/api/v1", v1Router);
+
+// API v2 Router with explicit multi-tenant isolation (#307)
+const v2Router = express.Router();
+v2Router.use((_req, res, next) => {
+  res.setHeader("API-Version", "v2");
+  next();
+});
+
+function mountV2(): void {
+  v2Router.use(metricsRoutes);
+  v2Router.use(healthRoutes);
+  v2Router.use(analyticsRoutes);
+  v2Router.use(remediationRoutes);
+  v2Router.use(noStore, votingRoutes);
+  v2Router.use(daoRoutes);
+  v2Router.use(ipfsRoutes);
+  v2Router.use(commentsRoutes);
+  v2Router.use(claimRoutes);
+  v2Router.use(indexerRoutes);
+  v2Router.use(bridgeRoutes);
+  v2Router.use(circuitRoutes);
+  v2Router.use(transactionRoutes);
+  v2Router.use(authRoutes);
+  v2Router.use(quadraticRoutes);
+  v2Router.use(noStore, adminRoutes);
+  v2Router.use(noStore, thresholdRoutes);
+  v2Router.use(auditRoutes);
+  v2Router.use(noStore, randomnessRoutes);
+  v2Router.use(payRoutes);
+  v2Router.use(swapRoutes);
+  v2Router.use(rampRoutes);
+}
+
+mountV2();
+app.use("/api/v2", v2Router);
 
 // OpenAPI spec + interactive docs
 const openApiDocument = buildOpenApiDocument();
@@ -622,6 +659,7 @@ async function startBackgroundServices(): Promise<void> {
 
   ensureLegacyTokenMigrated();
   startAuthScheduler();
+  services.scheduler.start();
 
   try {
     const database = getDb();
@@ -680,6 +718,8 @@ async function stopBackgroundServices(): Promise<void> {
   stopPinMonitor();
   stopMemoryMonitor();
   stopScheduledBackups();
+  services.scheduler.stop();
+  stopAuthScheduler();
 
   // Drain any outstanding confirmation waits so callers never hang on exit.
   void stopConfirmationWorker();

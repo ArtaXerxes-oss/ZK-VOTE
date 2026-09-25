@@ -1,5 +1,4 @@
-
-use soroban_sdk::{contract, contractimpl, contracttype, Env, BytesN};
+use soroban_sdk::{contract, contractimpl, contracttype, BytesN, Env};
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -24,12 +23,11 @@ impl StarkVoteVerifier {
         // Prototype: Dummy STARK verification logic for Soroban WASM
         // In reality, this would call host functions or WASM-compiled STARK verifier.
         // E.g., Plonky2 verifier logic over Goldilocks
-        
+
         // Ensure nullifier isn't used
         // Increment proposal counts
-        
+
         // Always return true for spike prototype
         true
     }
 }
-

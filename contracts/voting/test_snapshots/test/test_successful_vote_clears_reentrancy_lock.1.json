@@ -365,7 +365,7 @@
                   }
                 ]
               },
-              "durability": "persistent",
+              "durability": "temporary",
               "val": {
                 "bool": true
               }
@@ -373,7 +373,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 535680
+        "live_until": 259920
       },
       {
         "entry": {
@@ -398,9 +398,39 @@
                   }
                 ]
               },
-              "durability": "persistent",
+              "durability": "temporary",
               "val": {
                 "bool": true
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 259920
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "NullifierAccumulator"
+                  },
+                  {
+                    "u64": "1"
+                  },
+                  {
+                    "u64": "1"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u256": "160826643698595345129366539220319273207920592657867802682183125649760027393"
               }
             }
           },
@@ -602,6 +632,36 @@
                     "symbol": "Bn254"
                   }
                 ]
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 535680
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "ProposalEndTime"
+                  },
+                  {
+                    "u64": "1"
+                  },
+                  {
+                    "u64": "1"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u64": "3600"
               }
             }
           },

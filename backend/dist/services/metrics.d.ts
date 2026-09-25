@@ -78,4 +78,12 @@ export declare const relayerKeyTransactionsTotal: Counter<"key_id" | "public_key
  * Strips parameter values (e.g. /dao/123 -> /dao/:daoId)
  */
 export declare function normalizeRoute(path: string): string;
+export declare const archivalRunsTotal: Counter<"status">;
+export declare const archivalDuration: Histogram<string>;
+export declare const unauthenticated_rejection_total: Counter<"reason" | "endpoint">;
+export declare const cross_tenant_denial_total: Counter<"reason" | "tenant_id" | "target_resource">;
+export declare const reconciliation_mismatch_total: Counter<"component" | "mismatch_type">;
+export declare const rate_limit_store_size: Gauge<string>;
+export declare const session_store_size: Gauge<string>;
+export declare const batch_partial_failure_total: Counter<"reason" | "batch_type">;
 //# sourceMappingURL=metrics.d.ts.map

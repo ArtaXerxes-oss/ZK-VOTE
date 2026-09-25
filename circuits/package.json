@@ -34,12 +34,15 @@
     "depths:check": "node utils/gen_depth_circuits.js --check",
     "depths:benchmark": "node utils/benchmark_depths.js",
     "batch:fixture": "node utils/gen_batch_fixture.js",
-    "test:parity": "jest soroban_be_parity soroban_be_cli --verbose"
+    "test:parity": "jest soroban_be_parity soroban_be_cli --verbose",
+    "ceremony:test": "node ceremony/test-ceremony.js",
+    "ceremony:verify": "node ceremony/verify-ceremony.js",
+    "ceremony:contribute": "node ceremony/contribute.js"
   },
   "dependencies": {
     "circomlib": "^2.0.5",
     "circomlibjs": "^0.1.7",
-    "snarkjs": "^0.7.4"
+    "snarkjs": "0.7.5"
   },
   "devDependencies": {
     "circom_tester": "^0.0.19",

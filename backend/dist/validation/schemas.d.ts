@@ -268,12 +268,12 @@ export declare const blindSignRequestSchema: z.ZodObject<{
     caller: z.ZodString;
 }, "strip", z.ZodTypeAny, {
     daoId: number;
-    caller: string;
     blindedValue: string;
+    caller: string;
 }, {
     daoId: number;
-    caller: string;
     blindedValue: string;
+    caller: string;
 }>;
 export type BlindSignRequest = z.infer<typeof blindSignRequestSchema>;
 export declare const voteSchema: z.ZodEffects<z.ZodObject<{

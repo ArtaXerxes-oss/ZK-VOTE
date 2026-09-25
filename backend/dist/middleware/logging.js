@@ -19,7 +19,7 @@
  * services/routes automatically carries the request's correlation + trace ID.
  */
 import crypto from "crypto";
-// import { config } from "../config.js"; // Unused - kept for reference
+import { config } from "../config.js";
 import { log, hashIp, getRedactionPolicy } from "../services/logger.js";
 import { parseTraceparent, runWithSpanContext, } from "../services/tracing.js";
 /**
@@ -309,6 +309,7 @@ export function requestLogger(req, res, next) {
             ...bodyMeta,
         });
     });
+    const spanContext = { traceId, spanId, traceFlags: "01" };
     runWithSpanContext(spanContext, next);
 }
 /**

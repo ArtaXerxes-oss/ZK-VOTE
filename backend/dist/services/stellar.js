@@ -63,6 +63,24 @@ export const relayerKeypair = {
         if ("sign" in kp && typeof kp.sign === "function") {
             kp.sign(tx);
         }
+        else if ("signDecorated" in kp) {
+            // fallback
+            const hash = tx.hash();
+            const sig = kp.signDecorated(hash);
+            tx.signatures.push(sig);
+        }
+    },
+    signDecorated: (hash) => {
+        const kp = relayerKeyManager.getActiveKeypair();
+        if ("signDecorated" in kp && typeof kp.signDecorated === "function") {
+            return kp.signDecorated(hash);
+        }
+        const sig = kp.sign(hash);
+        const hint = kp.rawPublicKey().subarray(4 - 4);
+        // Actually rawPublicKey is 32 bytes, hint is last 4
+        const raw = kp.rawPublicKey();
+        const h = raw.subarray(raw.length - 4);
+        return new StellarSdk.xdr.DecoratedSignature({ hint: h, signature: sig });
     },
     rawPublicKey: () => {
         const kp = relayerKeyManager.getActiveKeypair();
@@ -854,5 +872,11 @@ export async function submitTransactionWithRecovery(preparedTx, operation, maxRe
     // All retries exhausted
     sequenceRecoveriesTotal.inc({ status: "failed" });
     throw lastError || new Error("Transaction submission failed after retries");
+}
+// Compatibility stubs for voting route (relocated from threshold-coordinator)
+export function scheduleCoverTraffic() { }
+export function monitorMissingVotes() { }
+export async function submitVoteViaRelayerQuorum(opts) {
+    return submitToRelayQuorum(opts.transaction);
 }
 //# sourceMappingURL=stellar.js.map

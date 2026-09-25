@@ -367,7 +367,7 @@
                   }
                 ]
               },
-              "durability": "persistent",
+              "durability": "temporary",
               "val": {
                 "bool": true
               }
@@ -375,7 +375,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 535680
+        "live_until": 259920
       },
       {
         "entry": {
@@ -400,7 +400,7 @@
                   }
                 ]
               },
-              "durability": "persistent",
+              "durability": "temporary",
               "val": {
                 "bool": true
               }
@@ -408,7 +408,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 535680
+        "live_until": 259920
       },
       {
         "entry": {
@@ -433,7 +433,7 @@
                   }
                 ]
               },
-              "durability": "persistent",
+              "durability": "temporary",
               "val": {
                 "bool": true
               }
@@ -441,7 +441,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 535680
+        "live_until": 259920
       },
       {
         "entry": {
@@ -466,7 +466,7 @@
                   }
                 ]
               },
-              "durability": "persistent",
+              "durability": "temporary",
               "val": {
                 "bool": true
               }
@@ -474,7 +474,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 535680
+        "live_until": 259920
       },
       {
         "entry": {
@@ -499,9 +499,39 @@
                   }
                 ]
               },
-              "durability": "persistent",
+              "durability": "temporary",
               "val": {
                 "bool": true
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 259920
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "NullifierAccumulator"
+                  },
+                  {
+                    "u64": "1"
+                  },
+                  {
+                    "u64": "1"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u256": "66307055565465653536543526542358164850462327829880853395171920912590167843892"
               }
             }
           },
@@ -703,6 +733,36 @@
                     "symbol": "Bn254"
                   }
                 ]
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 535680
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "ProposalEndTime"
+                  },
+                  {
+                    "u64": "1"
+                  },
+                  {
+                    "u64": "1"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u64": "3600"
               }
             }
           },

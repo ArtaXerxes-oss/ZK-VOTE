@@ -95,13 +95,7 @@ impl Voting {
     ///
     /// Setting a cap after votes have been cast is refused: changing the cap
     /// mid-election would silently reweight the ballots already in the tally.
-    pub fn set_sybil_weight_cap(
-        env: Env,
-        dao_id: u64,
-        proposal_id: u64,
-        cap: u32,
-        admin: Address,
-    ) {
+    pub fn set_sybil_weight_cap(env: Env, dao_id: u64, proposal_id: u64, cap: u32, admin: Address) {
         Self::bump_instance(&env);
         Self::require_not_paused(&env);
         admin.require_auth();

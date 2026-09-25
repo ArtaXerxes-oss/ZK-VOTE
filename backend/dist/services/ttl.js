@@ -1,6 +1,6 @@
 // @ts-nocheck
 import * as StellarSdk from "@stellar/stellar-sdk";
-import { isValidContractId } from "../config.js";
+import { config, isValidContractId } from "../config.js";
 let ttlDeps = null;
 /** Explicitly wire the TTL service's dependencies (composition root only). */
 export function initTtlService(d) {

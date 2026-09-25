@@ -237,7 +237,7 @@
     "side-channel-weakmap": "^1.0.2",
     "signal-exit": "^4.1.0",
     "slash": "^3.0.0",
-    "snarkjs": "^0.7.5",
+    "snarkjs": "0.7.5",
     "source-map": "^0.6.1",
     "source-map-support": "^0.5.13",
     "sprintf-js": "^1.0.3",

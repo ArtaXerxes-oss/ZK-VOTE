@@ -43,6 +43,13 @@ export declare const readyResponseSchema: z.ZodObject<{
 }, z.ZodTypeAny, "passthrough">, z.objectInputType<{
     status: z.ZodString;
 }, z.ZodTypeAny, "passthrough">>;
+export declare const healthResponseSchema: z.ZodObject<{
+    status: z.ZodString;
+}, "passthrough", z.ZodTypeAny, z.objectOutputType<{
+    status: z.ZodString;
+}, z.ZodTypeAny, "passthrough">, z.objectInputType<{
+    status: z.ZodString;
+}, z.ZodTypeAny, "passthrough">>;
 export declare const configResponseSchema: z.ZodObject<{
     networkPassphrase: z.ZodString;
     rpcUrl: z.ZodString;
@@ -165,6 +172,7 @@ export interface EndpointDef {
     errorStatuses?: number[];
 }
 export declare const ENDPOINTS: EndpointDef[];
+export declare function buildOpenApiDocument(): import("openapi3-ts/oas31").OpenAPIObject;
 export declare const openApiSpec: {
     readonly openapi: "3.0.3";
     readonly info: {
@@ -583,9 +591,5 @@ export declare const openApiSpec: {
         readonly replaySafe: "remediation uses idempotencyKey; duplicates return 409";
     };
 };
-export declare const ENDPOINTS: {
-    method: string;
-    path: string;
-}[];
 export default openApiSpec;
 //# sourceMappingURL=openapi.d.ts.map

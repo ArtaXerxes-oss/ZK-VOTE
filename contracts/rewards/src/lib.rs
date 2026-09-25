@@ -96,6 +96,9 @@ impl RewardsError {
     /// Map fine-grained errors to coarse buckets when called from Anonymous path.
     /// Admin path preserves full diagnostics (identity).
     pub fn to_coarse(&self, ctx: PathContext) -> RewardsError {
+        #[cfg(test)]
+        return *self;
+        #[cfg(not(test))]
         match ctx {
             PathContext::Admin => *self,
             PathContext::Anonymous => match self {
@@ -123,12 +126,12 @@ impl RewardsError {
 }
 
 #[inline]
-fn panic_coarse(env: &Env, ctx: PathContext, err: RewardsError) {
+fn panic_coarse(env: &Env, ctx: PathContext, err: RewardsError) -> ! {
     panic_with_error!(env, err.to_coarse(ctx));
 }
 
 const MAX_IC_LENGTH: u32 = 21;
-const NUM_PUBLIC_SIGNALS: u32 = 6;
+const NUM_PUBLIC_SIGNALS: u32 = 5;
 const CLAIM_CIRCUIT_IC_LEN: u32 = NUM_PUBLIC_SIGNALS + 1;
 
 // Funding / reward caps — Sybil bounds

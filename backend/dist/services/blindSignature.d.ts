@@ -173,4 +173,9 @@ export declare function issueCredentialForVoter(voterId: string, message: bigint
     signature: bigint;
     blindedSentToIssuer: bigint;
 };
+export declare function getBlindSignaturePublicKey(): Promise<string>;
+export declare function issueBlindSignature(opts: {
+    clientId: string;
+    blindedValue: string;
+}): Promise<string>;
 //# sourceMappingURL=blindSignature.d.ts.map

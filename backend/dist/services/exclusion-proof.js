@@ -8,6 +8,17 @@
  */
 import { getDb } from "./db.js";
 import { log } from "./logger.js";
+let _deps = null;
+export function initExclusionProof(deps) {
+    _deps = deps;
+}
+function deps() {
+    return {
+        getDb: _deps?.getDb ?? getDb,
+        log: _deps?.log ?? log,
+    };
+}
+let treeContractId = "";
 /**
  * The `member_revocations` table is created lazily so the revocation-tracking
  * feature works on fresh databases (including test databases) without

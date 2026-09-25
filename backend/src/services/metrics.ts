@@ -571,3 +571,48 @@ export const archivalDuration = new Histogram({
   buckets: [0.1, 0.5, 1, 2, 5, 10],
   registers: [register],
 });
+
+// ============================================
+// SECURITY, MULTI-TENANT & RECONCILIATION METRICS (#307 / Toxic Waste Audit)
+// ============================================
+
+export const unauthenticated_rejection_total = new Counter({
+  name: "zkvote_unauthenticated_rejection_total",
+  help: "Total requests rejected due to missing or invalid authentication credentials",
+  labelNames: ["endpoint", "reason"] as const,
+  registers: [register],
+});
+
+export const cross_tenant_denial_total = new Counter({
+  name: "zkvote_cross_tenant_denial_total",
+  help: "Total access attempts denied due to cross-tenant or cross-DAO resource isolation policies",
+  labelNames: ["tenant_id", "target_resource", "reason"] as const,
+  registers: [register],
+});
+
+export const reconciliation_mismatch_total = new Counter({
+  name: "zkvote_reconciliation_mismatch_total",
+  help: "Total reconciliation mismatches detected between SQLite state, relayer events, and on-chain Soroban ledger state",
+  labelNames: ["component", "mismatch_type"] as const,
+  registers: [register],
+});
+
+export const rate_limit_store_size = new Gauge({
+  name: "zkvote_rate_limit_store_size",
+  help: "Current number of tracked rate-limiting client keys in memory",
+  registers: [register],
+});
+
+export const session_store_size = new Gauge({
+  name: "zkvote_session_store_size",
+  help: "Current number of active authenticated relay sessions stored in memory or db",
+  registers: [register],
+});
+
+export const batch_partial_failure_total = new Counter({
+  name: "zkvote_batch_partial_failure_total",
+  help: "Total partial failures encountered during batch operations (e.g. pay batch, vote batch)",
+  labelNames: ["batch_type", "reason"] as const,
+  registers: [register],
+});
+

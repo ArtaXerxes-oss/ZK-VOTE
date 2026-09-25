@@ -102,4 +102,5 @@ export interface SpanOptions {
  * span only observes them.
  */
 export declare function withSpan<T>(name: string, attributes: SpanAttributes, operation: (context: SpanContext) => Promise<T> | T, options?: SpanOptions): Promise<T>;
+export declare function initializeTelemetry(): void;
 //# sourceMappingURL=tracing.d.ts.map

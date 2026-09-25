@@ -13,6 +13,11 @@ import helmet from "helmet";
 import { config, validateEnv, isValidContractId } from "./config.js";
 // Composition root (#358) — explicit construction/wiring of service deps.
 import { buildAppServices } from "./composition-root.js";
+import { initializeTelemetry } from "./services/tracing.js";
+import swaggerUi from "swagger-ui-express";
+import { ServiceSupervisor } from "./services/supervisor.js";
+import { closeDb } from "./services/db.js";
+import { buildOpenApiDocument } from "./openapi.js";
 import { startClusterMaster, initWorkerIpc, isLeaderWorker, onLeaderChange, registerWorkerShutdownHandler, } from "./services/cluster.js";
 import { log, logger } from "./services/logger.js";
 import * as ipfsService from "./services/ipfs.js";
@@ -32,7 +37,7 @@ import { startAuthScheduler, stopAuthScheduler, ensureLegacyTokenMigrated, } fro
 import { startMemoryMonitor, stopMemoryMonitor, } from "./services/memory-monitor.js";
 // Middleware
 import { csrfGuard, csrfTokenMiddleware, requestLogger, errorHandler, auditMiddleware, graduatedSlowDown, degradationContext, metricsMiddleware, } from "./middleware/index.js";
-import { healthRoutes, initHealthRoutes, analyticsRoutes, votingRoutes, daoRoutes, ipfsRoutes, commentsRoutes, claimRoutes, indexerRoutes, initIndexerRoutes, bridgeRoutes, circuitRoutes, transactionRoutes, authRoutes, quadraticRoutes, metricsRoutes, remediationRoutes, novaRoutes, adminRoutes, thresholdRoutes, auditRoutes, randomnessRoutes, } from "./routes/index.js";
+import { healthRoutes, initHealthRoutes, analyticsRoutes, votingRoutes, daoRoutes, ipfsRoutes, commentsRoutes, claimRoutes, indexerRoutes, initIndexerRoutes, bridgeRoutes, circuitRoutes, transactionRoutes, authRoutes, quadraticRoutes, metricsRoutes, remediationRoutes, novaRoutes, adminRoutes, thresholdRoutes, auditRoutes, randomnessRoutes, payRoutes, swapRoutes, rampRoutes, } from "./routes/index.js";
 import openApiSpec from "./openapi.js";
 // ============================================
 // ENVIRONMENT VALIDATION
@@ -106,6 +111,8 @@ app.use(metricsMiddleware);
 app.use(degradationContext);
 // Security: CORS configuration
 function parseCorsOrigins(value) {
+    if (Array.isArray(value))
+        return value;
     return value
         .split(",")
         .map((origin) => origin.trim())
@@ -210,6 +217,9 @@ app.use(noStore, adminRoutes);
 app.use(noStore, thresholdRoutes);
 app.use(auditRoutes);
 app.use(noStore, randomnessRoutes);
+app.use(payRoutes);
+app.use(swapRoutes);
+app.use(rampRoutes);
 // ============================================
 // API VERSIONING (#139)
 // ============================================
@@ -229,6 +239,7 @@ const v1Router = express.Router();
 function mountV1() {
     v1Router.use(metricsRoutes);
     v1Router.use(healthRoutes);
+    v1Router.use(analyticsRoutes);
     v1Router.use(remediationRoutes);
     v1Router.use(noStore, votingRoutes);
     v1Router.use(daoRoutes);
@@ -239,14 +250,50 @@ function mountV1() {
     v1Router.use(bridgeRoutes);
     v1Router.use(circuitRoutes);
     v1Router.use(transactionRoutes);
+    v1Router.use(authRoutes);
     v1Router.use(quadraticRoutes);
     v1Router.use(noStore, adminRoutes);
     v1Router.use(noStore, thresholdRoutes);
     v1Router.use(auditRoutes);
     v1Router.use(noStore, randomnessRoutes);
+    v1Router.use(payRoutes);
+    v1Router.use(swapRoutes);
+    v1Router.use(rampRoutes);
 }
 mountV1();
 app.use("/api/v1", v1Router);
+// API v2 Router with explicit multi-tenant isolation (#307)
+const v2Router = express.Router();
+v2Router.use((_req, res, next) => {
+    res.setHeader("API-Version", "v2");
+    next();
+});
+function mountV2() {
+    v2Router.use(metricsRoutes);
+    v2Router.use(healthRoutes);
+    v2Router.use(analyticsRoutes);
+    v2Router.use(remediationRoutes);
+    v2Router.use(noStore, votingRoutes);
+    v2Router.use(daoRoutes);
+    v2Router.use(ipfsRoutes);
+    v2Router.use(commentsRoutes);
+    v2Router.use(claimRoutes);
+    v2Router.use(indexerRoutes);
+    v2Router.use(bridgeRoutes);
+    v2Router.use(circuitRoutes);
+    v2Router.use(transactionRoutes);
+    v2Router.use(authRoutes);
+    v2Router.use(quadraticRoutes);
+    v2Router.use(noStore, adminRoutes);
+    v2Router.use(noStore, thresholdRoutes);
+    v2Router.use(auditRoutes);
+    v2Router.use(noStore, randomnessRoutes);
+    v2Router.use(payRoutes);
+    v2Router.use(swapRoutes);
+    v2Router.use(rampRoutes);
+}
+mountV2();
+app.use("/api/v2", v2Router);
 // OpenAPI spec + interactive docs
 const openApiDocument = buildOpenApiDocument();
 app.get("/openapi.json", (_req, res) => res.json(openApiSpec));
@@ -438,6 +485,7 @@ async function startBackgroundServices() {
     startTTLRenewal();
     ensureLegacyTokenMigrated();
     startAuthScheduler();
+    services.scheduler.start();
     try {
         const database = getDb();
         const dbPath = database.name;
@@ -491,6 +539,8 @@ async function stopBackgroundServices() {
     stopPinMonitor();
     stopMemoryMonitor();
     stopScheduledBackups();
+    services.scheduler.stop();
+    stopAuthScheduler();
     // Drain any outstanding confirmation waits so callers never hang on exit.
     void stopConfirmationWorker();
 }

@@ -23,6 +23,8 @@ router.post("/pay", bodyLimit("5kb"), async (req, res) => {
   }
 });
 
+import { batch_partial_failure_total } from "../services/metrics.js";
+
 router.post("/pay/batch", bodyLimit("256kb"), async (req, res) => {
   try {
     const { ops } = req.body;
@@ -30,6 +32,7 @@ router.post("/pay/batch", bodyLimit("256kb"), async (req, res) => {
     const r = await sendBatch(ops);
     res.json(r);
   } catch (e: any) {
+    batch_partial_failure_total.inc({ batch_type: "payments", reason: String(e.message || "unknown") });
     res.status(500).json({ error: e.message });
   }
 });
