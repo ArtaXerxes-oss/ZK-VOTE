@@ -222,6 +222,53 @@ function throwIfAborted(signal: AbortSignal): void {
   }
 }
 
+/** Page size for `getEvents`; the RPC caps a single response at this many. */
+const EVENTS_PAGE_LIMIT = 100;
+
+/**
+ * Fetch *every* event for `contractId` in `[startLedger, endLedger]` (#562).
+ *
+ * A single `getEvents` call returns at most `EVENTS_PAGE_LIMIT` events. The
+ * previous single call silently dropped anything past the first page while
+ * the watermark still advanced past those ledgers, so busy windows lost
+ * events permanently. Follow the response cursor until a short page, and
+ * drop anything past `endLedger` (cursor pages aren't bounded by it).
+ */
+async function fetchContractEvents(
+  server: StellarSdk.rpc.Server,
+  contractId: string,
+  startLedger: number,
+  endLedger: number,
+  signal: AbortSignal,
+): Promise<{ events: StellarSdk.rpc.Api.EventResponse[] }> {
+  const filters = [{ type: "contract" as const, contractIds: [contractId] }];
+  const all: StellarSdk.rpc.Api.EventResponse[] = [];
+  let cursor: string | undefined;
+  for (;;) {
+    throwIfAborted(signal);
+    const page = await server.getEvents(
+      cursor
+        ? { filters, cursor, limit: EVENTS_PAGE_LIMIT }
+        : { startLedger, endLedger, filters, limit: EVENTS_PAGE_LIMIT },
+    );
+    const pageEvents = page.events ?? [];
+    let pastEnd = false;
+    for (const event of pageEvents) {
+      if (event.ledger > endLedger) {
+        pastEnd = true;
+        break;
+      }
+      all.push(event);
+    }
+    const last = pageEvents[pageEvents.length - 1];
+    const next = (page as { cursor?: string }).cursor ?? last?.pagingToken ?? last?.id;
+    if (pastEnd || pageEvents.length < EVENTS_PAGE_LIMIT || !next || next === cursor) {
+      return { events: all };
+    }
+    cursor = next;
+  }
+}
+
 /** Poll for new events from Soroban RPC. */
 async function pollEvents(
   server: StellarSdk.rpc.Server,
@@ -276,17 +323,13 @@ async function pollEvents(
             end_ledger: targetEndLedger,
           },
           () =>
-            server.getEvents({
-              startLedger: startLedger + 1,
-              endLedger: targetEndLedger,
-              filters: [
-                {
-                  type: "contract",
-                  contractIds: [contractId],
-                },
-              ],
-              limit: 100,
-            }),
+            fetchContractEvents(
+              server,
+              contractId,
+              startLedger + 1,
+              targetEndLedger,
+              signal,
+            ),
         );
         throwIfAborted(signal);
 
