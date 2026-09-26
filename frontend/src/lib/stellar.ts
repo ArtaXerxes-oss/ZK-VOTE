@@ -10,6 +10,7 @@ import {
   Transaction,
 } from "@stellar/stellar-sdk";
 import { NETWORK_CONFIG } from "../config/contracts";
+import { RELAYER_HEALTH_TIMEOUT_MS } from "./relayerBackoff";
 
 // Initialize Soroban RPC server
 // allowHttp: true is required for local development on http://localhost
@@ -21,6 +22,7 @@ export const server = new rpc.Server(NETWORK_CONFIG.rpcUrl, {
 export const networkPassphrase = NETWORK_CONFIG.networkPassphrase;
 
 // Optional relayer endpoints (if front-end is allowed to call them directly)
+
 export async function checkRelayerReady(
   relayerUrl: string,
   authToken?: string,
@@ -28,14 +30,30 @@ export async function checkRelayerReady(
   const headers: Record<string, string> = {};
   if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
   try {
-    // Use /health endpoint - /ready is stricter and may return degraded when RPC is slow
-    const res = await fetch(`${relayerUrl}/health`, { headers });
-    const data = await res.json();
+    // Use /health endpoint - /ready is stricter and may return degraded when RPC is slow.
+    // Bounded by a timeout so a hung relayer can't pile up in-flight checks (#569).
+    const res = await fetch(`${relayerUrl}/health`, {
+      headers,
+      signal: AbortSignal.timeout(RELAYER_HEALTH_TIMEOUT_MS),
+    });
+    // A proxy/load balancer in front of a down relayer may answer with a
+    // non-JSON error page; report the HTTP status instead of a JSON parse error.
+    const data = await res.json().catch(() => null);
+    if (data === null) {
+      return { ok: false, error: `relayer health check returned HTTP ${res.status}` };
+    }
+    // `/health` deliberately answers 200 while degraded (graceful degradation,
+    // #204), so readiness is decided by the body's status, not the HTTP code.
     return { ok: data?.status === "ok", details: data };
   } catch (err: unknown) {
     return {
       ok: false,
-      error: err instanceof Error ? err.message : "health check failed",
+      // AbortSignal.timeout rejects with a DOMException, which isn't an
+      // Error instance in every runtime; read any string message it carries.
+      error:
+        typeof (err as { message?: unknown })?.message === "string"
+          ? (err as { message: string }).message
+          : "health check failed",
     };
   }
 }
