@@ -140,9 +140,20 @@ test("Exclusion proof - track reinstatement", async (t) => {
   const reinstateTime = now + 3600;
   await recordReinstatement(commitment, Number(TEST_DAO_ID), reinstateTime);
 
-  // Member should be able to vote again
-  // (In production, this would be verified by re-generating membership proof)
-  assert.ok(true);
+  // Member should be able to vote again: an exclusion proof for a reinstated
+  // member must no longer verify as "revoked" (#566).
+  const proof = createMockExclusionProof({
+    publicInputs: {
+      historicalRoot: "valid_historical",
+      currentRoot: "valid_current",
+      daoId: TEST_DAO_ID,
+      leafIndex: 8,
+      commitment,
+    },
+  });
+  const result = await verifyExclusionProof(proof, TEST_TREE_CONTRACT);
+  assert.equal(result.valid, false);
+  assert.equal(result.reason, "Member has not been revoked");
 });
 
 test("Exclusion proof - prevent double voting with revocation", async (t) => {
