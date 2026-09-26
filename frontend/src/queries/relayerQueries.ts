@@ -1,8 +1,10 @@
+import { useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { CONTRACTS, NETWORK_CONFIG } from "../config/contracts";
 import { checkRelayerReady, fetchRelayerConfig } from "../lib/stellar";
 import type { RelayerConfig } from "../lib/stellar";
 import { queryKeys } from "../lib/queryClient";
+import { nextRelayerPollDelay } from "../lib/relayerBackoff";
 
 export type RelayerStatus =
   | { state: "missing-url"; message: string }
@@ -110,15 +112,45 @@ async function fetchRelayerStatus(): Promise<RelayerStatusData> {
 }
 
 /**
+ * Whether a status means the relayer itself is up. A config "mismatch" is a
+ * reachable, healthy relayer that disagrees with local config — polling faster
+ * or slower won't change that, so it counts as healthy for backoff purposes.
+ */
+function isRelayerUp(status: RelayerStatus): boolean {
+  return status.state === "ready" || status.state === "mismatch";
+}
+
+/**
  * React Query hook for relayer status.
  * Replaces useRelayerStatus with caching and automatic refetching.
+ *
+ * Polls every 60s while the relayer is up; while it is down or degraded the
+ * interval backs off exponentially with jitter (#569), so many open clients
+ * don't keep hammering a struggling relayer in lockstep.
  */
 export function useRelayerStatusQuery() {
+  const consecutiveFailuresRef = useRef(0);
+
   const query = useQuery({
     queryKey: queryKeys.relayer.status(),
-    queryFn: fetchRelayerStatus,
+    queryFn: async () => {
+      try {
+        const data = await fetchRelayerStatus();
+        consecutiveFailuresRef.current = isRelayerUp(data.status)
+          ? 0
+          : consecutiveFailuresRef.current + 1;
+        return data;
+      } catch (err) {
+        consecutiveFailuresRef.current += 1;
+        throw err;
+      }
+    },
     staleTime: 30 * 1000, // 30 seconds
-    refetchInterval: 60 * 1000, // Refetch every minute
+    refetchInterval: (q) => {
+      // The relayer URL is baked in at build time; polling can't fix it.
+      if (q.state.data?.status.state === "missing-url") return false;
+      return nextRelayerPollDelay(consecutiveFailuresRef.current);
+    },
     retry: 2,
   });
 
