@@ -23,6 +23,7 @@ import {
   indexerQueueDepth,
   indexerRpcStreamReconnectsTotal,
   indexerGapRecoveriesTotal,
+  indexerPollMissesTotal,
 } from "./metrics.js";
 import { markDegraded, markHealthy } from "./service-health.js";
 import { WatermarkScheduler } from "./indexer-scheduler.js";
@@ -310,6 +311,10 @@ async function pollEvents(
       catchUpMode = false;
     }
 
+    // Contracts whose fetch failed this cycle. If any did, the watermark must
+    // not advance past ledgers we never read for them (#562).
+    let failedContracts = 0;
+
     for (const contractId of contracts) {
       throwIfAborted(signal);
       try {
@@ -386,12 +391,27 @@ async function pollEvents(
         if (signal.aborted) throw err;
         const error = err as Error;
         if (!error.message.includes("not found")) {
+          failedContracts++;
           log("warn", "poll_contract_failed", {
             contract: contractId.slice(0, 8) + "...",
             error: error.message,
           });
         }
       }
+    }
+
+    if (failedContracts > 0) {
+      // Hold the watermark so the whole window is re-read next cycle instead
+      // of being skipped for the failed contracts. Contracts that succeeded
+      // are re-read too, which is safe: addEvent is idempotent on
+      // (dao_id, ledger, tx_hash, type).
+      indexerPollMissesTotal.inc();
+      log("warn", "poll_window_retry", {
+        failedContracts,
+        startLedger: startLedger + 1,
+        endLedger: targetEndLedger,
+      });
+      return startLedger;
     }
 
     throwIfAborted(signal);

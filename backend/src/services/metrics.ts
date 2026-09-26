@@ -358,6 +358,12 @@ export const indexerOverrunSkips = new Counter({
   registers: [register],
 });
 
+export const indexerPollMissesTotal = new Counter({
+  name: "zkvote_indexer_poll_misses_total",
+  help: "Polling cycles that held the watermark because a contract's getEvents failed (window retried next cycle, #562)",
+  registers: [register],
+});
+
 export const indexerQueueDepth = new Gauge({
   name: "zkvote_indexer_queue_depth",
   help: "Current number of buffered events in the indexer backpressure queue",
