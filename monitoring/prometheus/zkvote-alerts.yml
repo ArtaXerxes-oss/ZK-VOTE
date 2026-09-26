@@ -100,3 +100,13 @@ groups:
         annotations:
           summary: Batch partial failure rate elevated
           description: Elevated partial failures observed in multi-item batch execution.
+      - alert: ZKVoteRelayerHighCardinalityMetricWarning
+        expr: count(zkvote_http_requests_total) > 500
+        for: 5m
+        labels:
+          severity: warning
+          service: zkvote-relayer
+        annotations:
+          summary: Metric label cardinality elevated
+          description: More than 500 distinct http_requests_total metric series detected, indicating potential route label cardinality leak.
+

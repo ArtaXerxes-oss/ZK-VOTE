@@ -102,7 +102,7 @@ export const coalescingWaitTime = new Histogram({
 export const membershipRegistrationTotal = new Counter({
   name: "zkvote_membership_registration_requests_total",
   help: "Total commitment registration requests served by the membership route",
-  labelNames: ["dao_id"] as const,
+  labelNames: ["status"] as const,
   registers: [register],
 });
 
@@ -540,16 +540,23 @@ export const relayerKeyTransactionsTotal = new Counter({
 
 /**
  * Normalise Express route path to a low-cardinality label.
- * Strips parameter values (e.g. /dao/123 -> /dao/:daoId)
+ * Strips parameter values, hashes, addresses, and query strings.
  */
 export function normalizeRoute(path: string): string {
   if (!path) return "unknown";
 
-  return path
-    .replace(/\/[0-9a-f]{20,}/g, "/:hash")
+  const cleanPath = path.split("?")[0];
+
+  return cleanPath
+    .replace(/\/[0-9a-f]{20,}/gi, "/:hash")
+    .replace(/\/[CG][A-Z2-7]{55}/g, "/:address")
     .replace(
-      /\/(dao|proposal|comment|events|bridge|circuits|ipfs)\/[^/]+/g,
+      /\/(dao|proposal|comment|comments|events|bridge|circuits|ipfs|membership|claim|pay|swap|ramp|nullifier|root|root-history)\/[^/]+/gi,
       "/$1/:param",
+    )
+    .replace(
+      /\/(proposal|nullifier|root-history|comments|comment)\/[^/]+\/[^/]+/gi,
+      "/$1/:param/:id2",
     )
     .replace(/\/(root|daos|ready|health|config|metrics|db)(\/|$)/g, "/$1$2");
 }
