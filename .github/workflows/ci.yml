@@ -28,8 +28,13 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Build WASM
         run: cargo build --target wasm32v1-none --release
-      - name: Run tests
-        run: cargo test --workspace
+      - name: Run unit tests (workspace, excluding integration)
+        run: cargo test --workspace --exclude zkvote-integration-tests
+      - name: Run integration tests (explicit, #575)
+        # zkvote-integration-tests is a workspace member but excluded from
+        # default-members, so it must be invoked explicitly — otherwise
+        # reentrancy/stress coverage stays hidden from CI.
+        run: cargo test -p zkvote-integration-tests -- --test-threads=1
       - name: Groth16 production edge corpus
         run: cargo test -p zkvote-groth16 --test bn254_edge_case_corpus -- --nocapture
       - name: Groth16 testutils stub behavior

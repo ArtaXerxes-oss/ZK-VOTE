@@ -98,27 +98,118 @@ export function getLogMetrics(reset = false): LogMetrics {
 // SENSITIVE FIELD REDACTION
 // ============================================
 
-/** Fields to redact from request/response bodies */
-const SENSITIVE_FIELDS = new Set([
-  "proof",
-  "nullifier",
+/**
+ * Fields to redact from request/response bodies (#574).
+ *
+ * Stored NORMALIZED (lowercase, separators stripped) because lookups use
+ * `normalizeFieldKey()`. The previous set mixed camelCase entries
+ * (`relayerSecretKey`) with a lowercase lookup, so those keys NEVER matched
+ * and `RELAYER_SECRET_KEY` / `blindingFactor` could reach access logs.
+ * Never log the full `config` object — use `sanitizeConfigForLogging()`.
+ */
+const SENSITIVE_FIELDS = new Set(
+  [
+    "proof",
+    "nullifier",
+    "commitment",
+    "commitmenthash",
+    "secret",
+    "secretkey",
+    "secret_key",
+    "relayersecretkey",
+    "relayer_secret_key",
+    "relayerauth",
+    "relayer_auth_token",
+    "relayerAuthToken",
+    "x-relayer-auth",
+    "xrelayerauth",
+    "token",
+    "authtoken",
+    "auth_token",
+    "masterkey",
+    "master_key",
+    "x-master-key",
+    "password",
+    "jwt",
+    "pinatajwt",
+    "pinata_jwt",
+    "web3storagetoken",
+    "web3_storage_token",
+    "privatekey",
+    "private_key",
+    "seed",
+    "mnemonic",
+    "blindingfactor",
+    "blinding_factor",
+    "blinding",
+    "salt",
+    "authorization",
+    "authorizationheader",
+    "cookie",
+    "session",
+    "apikey",
+    "api_key",
+  ].map(normalizeFieldKey),
+);
+
+/** Substring fragments that always force redaction even when the full key is unknown. */
+const SENSITIVE_KEY_FRAGMENTS = [
   "secret",
-  "token",
+  "private",
   "password",
+  "token",
   "jwt",
-  "authorization",
-  "authorizationHeader",
-  "relayerSecretKey",
-  "relayerAuthToken",
-  "pinataJwt",
-  "web3StorageToken",
-  "privateKey",
-  "secretKey",
+  "blinding",
+  "relayer",
+  "mnemonic",
+  "seed",
+  "passwd",
+];
+
+function normalizeFieldKey(key: string): string {
+  return key.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function isSensitiveKey(key: string): boolean {
+  const normalized = normalizeFieldKey(key);
+  if (SENSITIVE_FIELDS.has(normalized)) return true;
+  return SENSITIVE_KEY_FRAGMENTS.some((frag) => normalized.includes(frag));
+}
+
+/**
+ * allowlist of config keys that are safe to log. Everything else —
+ * especially RELAYER_SECRET_KEY / RELAYER_AUTH_TOKEN / PINATA_JWT — is
+ * replaced with "[REDACTED]". Use this instead of logging `config` directly.
+ */
+const SAFE_CONFIG_KEYS = new Set([
+  "port",
+  "networkPassphrase",
+  "rpcUrl",
+  "corsOrigins",
+  "indexerEnabled",
+  "logSamplingRate",
+  "logSlowThresholdMs",
+  "logBodyMaxChars",
 ]);
+
+export function sanitizeConfigForLogging(
+  cfg: Record<string, unknown>,
+): Record<string, unknown> {
+  const safe: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(cfg)) {
+    if (SAFE_CONFIG_KEYS.has(key)) {
+      safe[key] = value;
+    } else {
+      safe[key] = "[REDACTED]";
+    }
+  }
+  return safe;
+}
 
 /** Regex patterns for sensitive values */
 const SENSITIVE_PATTERNS = [
   /^(sk_|pk_|C[A-Z2-7]{55})/, // Stellar keys and contract IDs
+  /^S[A-Z2-7]{55}$/, // Stellar SECRET seeds (e.g. RELAYER_SECRET_KEY) — #574
   /^Bearer\s+/i, // Bearer tokens
 ];
 
@@ -126,9 +217,13 @@ const SENSITIVE_PATTERNS = [
  * Deep-clone and redact sensitive fields from a body object.
  * Returns a new object with sensitive values replaced with "[REDACTED]".
  */
-function redactBody(body: unknown, maxChars: number): unknown {
+export function redactBody(body: unknown, maxChars: number): unknown {
+  if (Array.isArray(body)) {
+    return body.map((item) => redactBody(item, maxChars));
+  }
   if (!body || typeof body !== "object") {
     if (typeof body === "string") {
+      if (SENSITIVE_PATTERNS.some((p) => p.test(body))) return "[REDACTED]";
       return body.length > maxChars ? body.slice(0, maxChars) + "...(truncated)" : body;
     }
     return body;
@@ -136,7 +231,7 @@ function redactBody(body: unknown, maxChars: number): unknown {
 
   const redacted: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(body as Record<string, unknown>)) {
-    if (SENSITIVE_FIELDS.has(key.toLowerCase())) {
+    if (isSensitiveKey(key)) {
       redacted[key] = "[REDACTED]";
     } else if (typeof value === "string" && SENSITIVE_PATTERNS.some((p) => p.test(value))) {
       redacted[key] = "[REDACTED]";
@@ -392,6 +487,9 @@ export function requestLogger(
     });
   });
 
+  // #574: the ambient span context carries ONLY trace/span identifiers —
+  // never request bodies, config, or secrets — so exporters cannot leak
+  // RELAYER_SECRET_KEY / blindingFactor through trace attributes.
   const spanContext: SpanContext = { traceId, spanId, traceFlags: "01" };
   runWithSpanContext(spanContext, next);
 }
