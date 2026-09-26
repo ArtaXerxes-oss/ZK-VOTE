@@ -64,6 +64,24 @@ groups:
         annotations:
           summary: State reconciliation mismatch detected
           description: State divergence detected between SQLite cache and Soroban on-chain state.
+      - alert: ZKVoteRelayerDaoTallyMismatch
+        expr: sum(rate(zkvote_reconciliation_mismatch_total{component="dao_tally"}[5m])) > 0
+        for: 2m
+        labels:
+          severity: critical
+          service: zkvote-relayer
+        annotations:
+          summary: DAO hash-vs-DB tally mismatch detected
+          description: Per-DAO vote_cast hash count (Horizon/stellar.expert) diverges from relayer DB pipeline counts. See FIX_REPORT.md blast-radius workflow.
+      - alert: ZKVoteRelayerDaoReconciliationStale
+        expr: time() - zkvote_dao_reconciliation_last_ok_timestamp_seconds > 900
+        for: 5m
+        labels:
+          severity: warning
+          service: zkvote-relayer
+        annotations:
+          summary: DAO reconciliation has not completed cleanly
+          description: No fully-consistent DAO reconciliation run in the last 15 minutes.
       - alert: ZKVoteRelayerRateLimitStoreExhaustion
         expr: zkvote_rate_limit_store_size > 50000
         for: 5m

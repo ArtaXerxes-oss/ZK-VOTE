@@ -222,6 +222,7 @@ export interface FetchOptions extends RequestInit {
 export class RelayerError extends Error {
   status?: number;
   code?: string;
+  retryAfterMs?: number;
   isRateLimited: boolean;
   isBackoff: boolean;
   isNetworkError: boolean;
@@ -231,6 +232,7 @@ export class RelayerError extends Error {
     status?: number,
     code?: string,
     isNetworkError = false,
+    retryAfterMs?: number,
   ) {
     super(message);
     this.name = "RelayerError";
@@ -239,16 +241,82 @@ export class RelayerError extends Error {
     this.isRateLimited = status === 429;
     this.isBackoff = false;
     this.isNetworkError = isNetworkError;
+    this.retryAfterMs = retryAfterMs;
   }
 }
 
-function mapBackendError(status: number, data?: any): string {
-  if (status === 429)
-    return "The network is congested. Please try again later.";
+/**
+ * Parse a `Retry-After` header value into milliseconds (#576).
+ * Supports delta-seconds ("120") and HTTP-date ("Wed, 21 Oct 2026 07:28:00 GMT").
+ * Returns undefined when absent/unparseable; clamps to [0, 60_000].
+ */
+export function parseRetryAfterMs(header: string | null): number | undefined {
+  if (!header) return undefined;
+  const trimmed = header.trim();
+  if (!trimmed) return undefined;
+  const seconds = Number(trimmed);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.min(Math.max(0, Math.round(seconds * 1000)), 60000);
+  }
+  const dateMs = Date.parse(trimmed);
+  if (!Number.isNaN(dateMs)) {
+    return Math.min(Math.max(0, dateMs - Date.now()), 60000);
+  }
+  return undefined;
+}
+
+export interface SafeJsonResult {
+  data: any;
+  /** Raw text snippet (truncated) when the body was not JSON — e.g. HTML 429 pages. */
+  rawText?: string;
+  isJson: boolean;
+}
+
+/**
+ * Content-type aware JSON guard (#576).
+ *
+ * Never calls `response.json()` blindly: HTML/text error pages (proxies,
+ * rate limiters, WAFs) previously threw a SyntaxError that was swallowed by
+ * `.catch(() => ({}))`, hiding 429s. Returns `{ isJson: false }` with a
+ * truncated snippet instead so callers can surface an explicit rate-limit
+ * error with `Retry-After`.
+ */
+export async function safeParseJsonResponse(
+  response: Response,
+): Promise<SafeJsonResult> {
+  const contentType = response.headers.get("content-type") || "";
+  if (!contentType.toLowerCase().includes("json")) {
+    const text = await response.text().catch(() => "");
+    return {
+      data: undefined,
+      rawText: text.slice(0, 500),
+      isJson: false,
+    };
+  }
+  try {
+    const data = await response.json();
+    return { data, isJson: true };
+  } catch {
+    const text = await response.text().catch(() => "");
+    return {
+      data: undefined,
+      rawText: text.slice(0, 500),
+      isJson: false,
+    };
+  }
+}
+
+function mapBackendError(status: number, data?: any, rawText?: string): string {
+  if (status === 429) {
+    const hint = rawText ? ` (${rawText.slice(0, 120)})` : "";
+    return `Rate limited (429). Please wait and try again later.${hint}`;
+  }
   if (status === 503 || status === 504)
     return "The blockchain network is currently unreachable. Operating in degraded mode.";
   if (status === 500) return "An internal error occurred on the relayer.";
+  if (data && typeof data.error === "string") return data.error;
   if (data && data.error) return data.error;
+  if (rawText) return `Request failed (${status}): ${rawText.slice(0, 120)}`;
   return "An unexpected error occurred.";
 }
 
@@ -304,37 +372,55 @@ export async function relayerFetch(
         signal: fetchOptions.signal || AbortSignal.timeout(15000),
       });
 
-      // Check for rate limiting (429) - treat as failure with backoff
+      // Check for rate limiting (429) - treat as failure with backoff.
+      // #576: use the content-type aware guard so HTML/text 429 pages from
+      // proxies are surfaced explicitly instead of being swallowed by a
+      // blind response.json() call, and always honor Retry-After.
       if (response.status === 429) {
         markFailure();
+        const retryAfterMs =
+          parseRetryAfterMs(response.headers.get("Retry-After")) ??
+          Math.min(1000 * Math.pow(2, attempt + 1), 30000);
+        const parsed = await safeParseJsonResponse(response);
+        const message = mapBackendError(429, parsed.data, parsed.rawText);
 
-        // On last attempt, throw an error
+        // On last attempt, throw an explicit rate-limit error
         if (attempt >= maxRetries - 1) {
-          throw new RelayerError(mapBackendError(429), 429);
+          throw new RelayerError(
+            message,
+            429,
+            parsed.data?.code ?? parsed.data?.error?.code,
+            false,
+            retryAfterMs,
+          );
         }
 
-        // Wait longer for rate limits - use Retry-After header if present
-        const retryAfter = response.headers.get("Retry-After");
-        const delay = retryAfter
-          ? Math.min(parseInt(retryAfter, 10) * 1000, 30000)
-          : Math.min(1000 * Math.pow(2, attempt + 1), 30000);
-        await new Promise((resolve) => setTimeout(resolve, delay));
+        await new Promise((resolve) =>
+          setTimeout(resolve, Math.min(retryAfterMs, 30000)),
+        );
+        lastError = new RelayerError(
+          message,
+          429,
+          parsed.data?.code ?? parsed.data?.error?.code,
+          false,
+          retryAfterMs,
+        );
         continue;
       }
 
       if (!response.ok) {
-        let errorData;
-        try {
-          errorData = await response.json();
-        } catch {
-          // Ignore parse errors if no JSON
-        }
+        const parsed = await safeParseJsonResponse(response);
+        const errorData = parsed.data;
 
-        const errorMessage = mapBackendError(response.status, errorData);
+        const errorMessage = mapBackendError(
+          response.status,
+          errorData,
+          parsed.rawText,
+        );
         lastError = new RelayerError(
           errorMessage,
           response.status,
-          errorData?.code,
+          errorData?.code ?? errorData?.error?.code,
         );
 
         // Don't retry client errors (except 429 which is handled above)
@@ -413,10 +499,8 @@ export async function checkRelayerHealth(): Promise<boolean> {
       skipBackoff: true,
     });
     if (!response.ok) return false;
-    const body = (await response.json()) as {
-      status?: string;
-      services?: HealthServicesSnapshot;
-    };
+    const { data: body } = await safeParseJsonResponse(response);
+    if (!body || typeof body !== "object") return response.ok;
     if (body.services) {
       notifyDegradation([
         ...(body.services.degraded ?? []),
@@ -446,10 +530,8 @@ export async function checkRelayerHealthDetails(): Promise<HealthServicesSnapsho
       skipBackoff: true,
     });
     if (!response.ok) return null;
-    const body = (await response.json()) as {
-      status?: string;
-      services?: HealthServicesSnapshot;
-    };
+    const { data: body, isJson } = await safeParseJsonResponse(response);
+    if (!isJson || !body || typeof body !== "object") return null;
     if (body.services) {
       notifyDegradation([
         ...(body.services.degraded ?? []),
@@ -554,11 +636,24 @@ export async function commitVoteProof(input: CommitVoteInput): Promise<{
   });
 
   if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.error || "Failed to commit vote proof");
+    const parsed = await safeParseJsonResponse(response);
+    if (response.status === 429) {
+      throw new RelayerError(
+        mapBackendError(429, parsed.data, parsed.rawText),
+        429,
+        undefined,
+        false,
+        parseRetryAfterMs(response.headers.get("Retry-After")),
+      );
+    }
+    throw new Error(
+      parseApiError(parsed.data ?? parsed.rawText) ||
+        "Failed to commit vote proof",
+    );
   }
 
-  return response.json();
+  const parsed = await safeParseJsonResponse(response);
+  return parsed.data;
 }
 
 /**
@@ -567,9 +662,19 @@ export async function commitVoteProof(input: CommitVoteInput): Promise<{
 export async function fetchRelayerPublicKey(): Promise<string> {
   const response = await relayerFetch("/relayer/pubkey");
   if (!response.ok) {
+    const parsed = await safeParseJsonResponse(response);
+    if (response.status === 429) {
+      throw new RelayerError(
+        mapBackendError(429, parsed.data, parsed.rawText),
+        429,
+        undefined,
+        false,
+        parseRetryAfterMs(response.headers.get("Retry-After")),
+      );
+    }
     throw new Error("Failed to fetch relayer public key");
   }
-  const data = await response.json();
+  const { data } = await safeParseJsonResponse(response);
   return data.publicKey;
 }
 
@@ -595,14 +700,27 @@ async function encryptionJson<T>(
 ): Promise<T> {
   const response = await relayerFetch(path, options);
   if (!response.ok) {
-    const data = await response.json().catch(() => ({}));
+    const parsed = await safeParseJsonResponse(response);
+    if (response.status === 429) {
+      throw new RelayerError(
+        mapBackendError(429, parsed.data, parsed.rawText),
+        429,
+        undefined,
+        false,
+        parseRetryAfterMs(response.headers.get("Retry-After")),
+      );
+    }
     throw new RelayerError(
-      parseApiError(data) || `Encryption request failed (${response.status})`,
+      parseApiError(parsed.data) ||
+        (parsed.rawText
+          ? `Encryption request failed (${response.status}): ${parsed.rawText.slice(0, 120)}`
+          : `Encryption request failed (${response.status})`),
       response.status,
-      getApiErrorCode(data),
+      getApiErrorCode(parsed.data),
     );
   }
-  return response.json() as Promise<T>;
+  const parsed = await safeParseJsonResponse(response);
+  return parsed.data as T;
 }
 
 /**
@@ -615,8 +733,24 @@ async function encryptionJson<T>(
 export async function fetchKeyEpoch(daoId: number): Promise<KeyEpoch | null> {
   const response = await relayerFetch(`${ENCRYPTION_BASE}/daos/${daoId}/epoch`);
   if (response.status === 404) return null;
-  if (!response.ok) throw new RelayerError("Failed to fetch key epoch", response.status);
-  return response.json();
+  if (!response.ok) {
+    const parsed = await safeParseJsonResponse(response);
+    if (response.status === 429) {
+      throw new RelayerError(
+        mapBackendError(429, parsed.data, parsed.rawText),
+        429,
+        undefined,
+        false,
+        parseRetryAfterMs(response.headers.get("Retry-After")),
+      );
+    }
+    throw new RelayerError(
+      parseApiError(parsed.data) || "Failed to fetch key epoch",
+      response.status,
+    );
+  }
+  const { data } = await safeParseJsonResponse(response);
+  return data;
 }
 
 /**
@@ -634,9 +768,23 @@ export async function fetchWrappedGroupKey(
   );
   if (response.status === 404) return null;
   if (!response.ok) {
-    throw new RelayerError("Failed to fetch group key", response.status);
+    const parsed = await safeParseJsonResponse(response);
+    if (response.status === 429) {
+      throw new RelayerError(
+        mapBackendError(429, parsed.data, parsed.rawText),
+        429,
+        undefined,
+        false,
+        parseRetryAfterMs(response.headers.get("Retry-After")),
+      );
+    }
+    throw new RelayerError(
+      parseApiError(parsed.data) || "Failed to fetch group key",
+      response.status,
+    );
   }
-  return response.json();
+  const { data } = await safeParseJsonResponse(response);
+  return data;
 }
 
 /**
@@ -710,18 +858,32 @@ export async function fetchEncryptedContent(
 
   if (response.status === 404) return null;
   if (response.status === 410) {
-    const data = await response.json().catch(() => ({}));
+    const { data } = await safeParseJsonResponse(response);
     return {
       redacted: true,
-      redactedAt: data.redactedAt ?? null,
-      reason: data.reason ?? null,
+      redactedAt: data?.redactedAt ?? null,
+      reason: data?.reason ?? null,
     };
   }
   if (!response.ok) {
-    throw new RelayerError("Failed to fetch encrypted content", response.status);
+    const parsed = await safeParseJsonResponse(response);
+    if (response.status === 429) {
+      throw new RelayerError(
+        mapBackendError(429, parsed.data, parsed.rawText),
+        429,
+        undefined,
+        false,
+        parseRetryAfterMs(response.headers.get("Retry-After")),
+      );
+    }
+    throw new RelayerError(
+      parseApiError(parsed.data) || "Failed to fetch encrypted content",
+      response.status,
+    );
   }
 
-  return response.json();
+  const { data } = await safeParseJsonResponse(response);
+  return data;
 }
 
 /** True when a fetch result is a redaction tombstone rather than a body. */

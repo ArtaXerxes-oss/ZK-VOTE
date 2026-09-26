@@ -616,3 +616,20 @@ export const batch_partial_failure_total = new Counter({
   registers: [register],
 });
 
+// ============================================
+// DAO END-TO-END RECONCILIATION METRICS (#577)
+// ============================================
+
+export const daoReconciliationRunsTotal = new Counter({
+  name: "zkvote_dao_reconciliation_runs_total",
+  help: "Total DAO end-to-end reconciliation runs (create_dao→mint→register→proposal→vote→tally hash vs DB count)",
+  labelNames: ["status"] as const,
+  registers: [register],
+});
+
+export const daoReconciliationLastOk = new Gauge({
+  name: "zkvote_dao_reconciliation_last_ok_timestamp_seconds",
+  help: "Unix timestamp of the last fully-consistent DAO reconciliation run (0 when never clean)",
+  registers: [register],
+});
+
