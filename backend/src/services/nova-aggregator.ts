@@ -61,6 +61,49 @@ export class NovaAggregatorService {
     }
   }
 
+  /** Test seam: replace the CLI runner so tests don't spawn cargo (#566). */
+  _setExecForTest(fn: typeof execAsync): void {
+    this._exec = fn;
+  }
+
+  /**
+   * Verify a recursive proof by delegating to the nova-aggregator CLI's
+   * `--verify` mode, which runs `NovaAggregator::verify_proof` and prints
+   * `{"verified": bool}` (exit 0 when valid, 1 when invalid) (#566).
+   *
+   * `POST /api/v1/nova/verify` called this method, but it did not exist, so
+   * every verification request failed with a 500.
+   */
+  async verifyProof(
+    payload: RecursiveProofPayload,
+  ): Promise<{ verified: boolean }> {
+    const proofPath = path.join(
+      this.tempDir,
+      `verify_${Date.now()}_${Math.random().toString(36).slice(2)}.json`,
+    );
+    try {
+      fs.writeFileSync(proofPath, JSON.stringify(payload), "utf8");
+      const cargoCmd = `cargo run -p nova-aggregator --bin nova-aggregator -- --verify "${proofPath}"`;
+      let stdout: string;
+      try {
+        ({ stdout } = await this._exec(cargoCmd, {
+          cwd: path.resolve(__dirname, "../../"),
+        }));
+      } catch (err: any) {
+        // exit code 1 means "proof invalid": exec rejects but stdout still
+        // carries {"verified": false}. Anything else is a real failure.
+        if (err && typeof err.stdout === "string" && err.stdout.includes('"verified"')) {
+          stdout = err.stdout;
+        } else {
+          throw err;
+        }
+      }
+      return { verified: parseVerifyOutput(stdout) };
+    } finally {
+      if (fs.existsSync(proofPath)) fs.unlinkSync(proofPath);
+    }
+  }
+
   /// Default aggregate Votes method
   async aggregateVotes(
     daoId: number,
@@ -170,6 +213,20 @@ export class NovaAggregatorService {
       if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
     }
   }
+}
+
+/** Parse the last `{"verified": bool}` JSON line printed by the CLI. */
+export function parseVerifyOutput(stdout: string): boolean {
+  const lines = stdout.trim().split(/\r?\n/).reverse();
+  for (const line of lines) {
+    try {
+      const parsed = JSON.parse(line);
+      if (parsed && typeof parsed.verified === "boolean") return parsed.verified;
+    } catch {
+      // not JSON: CLI log line, keep looking
+    }
+  }
+  throw new Error("Nova verifier returned no verification result");
 }
 
 export const novaAggregatorService = new NovaAggregatorService();
