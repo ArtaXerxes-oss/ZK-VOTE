@@ -9,8 +9,8 @@ WORKDIR /app
 # Copy package files
 COPY package*.json ./
 
-# Install all dependencies
-RUN npm install --legacy-peer-deps
+# Install all dependencies with frozen lockfile for hermetic build
+RUN npm ci --legacy-peer-deps
 
 # Copy source code (excluding contracts which are separate packages)
 COPY . .

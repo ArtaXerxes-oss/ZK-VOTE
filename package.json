@@ -305,5 +305,12 @@
   "bugs": {
     "url": "https://github.com/AshFrancis/zkvote/issues"
   },
-  "homepage": "https://github.com/AshFrancis/zkvote#readme"
+  "homepage": "https://github.com/AshFrancis/zkvote#readme",
+  "overrides": {
+    "snarkjs": "0.7.5",
+    "circom_runtime": "0.1.28",
+    "ffjavascript": "0.2.63",
+    "wasmcurves": "0.2.2",
+    "@stellar/stellar-sdk": "15.1.0"
+  }
 }
