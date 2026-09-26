@@ -100,3 +100,31 @@ groups:
         annotations:
           summary: Batch partial failure rate elevated
           description: Elevated partial failures observed in multi-item batch execution.
+      - alert: ZKVoteRelayerUploadValidationAnomaly
+        expr: sum(rate(zkvote_upload_validation_rejection_total[5m])) > 2
+        for: 5m
+        labels:
+          severity: warning
+          service: zkvote-relayer
+        annotations:
+          summary: Upload validation rejections or TOCTOU lock contention elevated
+          description: Abnormal rate of rejected image uploads or file sanitization failures detected.
+      - alert: ZKVoteRelayerIframeSecurityOriginViolation
+        expr: sum(rate(zkvote_postmessage_origin_rejected_total[5m])) > 1
+        for: 5m
+        labels:
+          severity: critical
+          service: zkvote-frontend
+        annotations:
+          summary: Untrusted postMessage origin attempted to trigger panel actions
+          description: Messages from unapproved origins (e.g. evil.com) rejected by iframe origin check.
+      - alert: ZKVoteWasmSignatureVerificationFailure
+        expr: sum(rate(zkvote_wasm_signature_verification_failure_total[5m])) > 0
+        for: 1m
+        labels:
+          severity: critical
+          service: zkvote-deploy
+        annotations:
+          summary: Contract WASM signature verification failed during deployment
+          description: Unsigned or malicious WASM deployment blocked by cosign verification.
+

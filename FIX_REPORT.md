@@ -203,3 +203,46 @@ The blast radius of this vulnerability spanned across five operational surfaces:
 | **Frontend Production Build** | `npm run build` (in `frontend/`) | **0 Errors, bundle verified (exit 0)** |
 | **Formal Model Verification** | `formal-model/TranscriptRegistry.tla` | **Invariants hold across all states** |
 
+---
+
+# Fix Report — Issues #546, #547, #548 Security Hardening
+
+**Issues Resolved:**
+- **#546**: `sharp` `file-type` `clamscan` `multer` TOCTOU Between DAO Thumbnail Upload and `pinata` Pin
+- **#547**: `helmet` CSP Trusted Types PayPanel/SwapPanel iframe `postMessage` Origin Check Bypass `SOROSWAP_API`
+- **#548**: `sigstore` `cosign` WASM `dao_registry.wasm` Signature Verification Missing `deploy` Allows Malicious WASM
+
+## 1. Vulnerability Analysis & Blast Radius
+
+### Issue #546: Upload Validation TOCTOU & Decompression Bomb Vulnerability
+- **Root Cause**: Image file validation (MIME detection, dimensions, threat checks) was decoupled from Pinata pinning. Between the validation step and the pin step, concurrent requests or mutable buffer states created a Time-of-Check to Time-of-Use (TOCTOU) race condition where a benign file could pass inspection while a malicious sharp bomb or polyglot payload was pinned to IPFS. Additionally, DAO thumbnail uploads lacked a dedicated atomic endpoint with role verification.
+- **Blast Radius**: Malicious DAO thumbnails or IPFS images could cause memory exhaustion (decompression bombs) or distribute malicious content through IPFS gateways.
+- **Fix Implemented**:
+  - Implemented `ValidationLockManager` with per-hash/per-resource async transactional locking (`validationLock`).
+  - Unified file validation (`detectMimeType`, embedded script scanning, polyglot checks), Sharp dimensions & metadata stripping, and Pinata pinning into an atomic single-step transaction.
+  - Added authenticated, role-gated DAO thumbnail upload endpoints `POST /daos/:daoId/thumbnail` and `POST /dao/:daoId/thumbnail` with admin verification and atomic pinning.
+
+### Issue #547: Missing postMessage Origin Validation & CSP Trusted Types Bypass
+- **Root Cause**: Frontend financial integration components (`PayPanel`, `SwapPanel`, `DepositWithdraw`) were designed for cross-window / iframe communication with Soroswap and host platforms, but lacked strict `event.origin` validation. An attacker embedding the application or sending messages from `evil.com` could trigger unauthorized payment, swap, or deposit state manipulation. Furthermore, Helmet CSP did not enforce Trusted Types (`require-trusted-types-for 'script'`) or restrict `frame-ancestors`.
+- **Blast Radius**: Cross-origin message spoofing triggering unwanted asset transfers or unauthorized transactions.
+- **Fix Implemented**:
+  - Configured Helmet CSP with `requireTrustedTypesFor: ["'script'"]` and restricted `frameAncestors` to `['self', 'https://api.soroswap.finance', 'https://app.soroswap.finance']`.
+  - Added `frontend/src/lib/messageOrigin.ts` enforcing an allowlist for `window.location.origin` and trusted Soroswap endpoints, immediately dropping messages from untrusted origins like `evil.com`.
+  - Wired message listeners in `PayPanel.tsx`, `SwapPanel.tsx`, and `DepositWithdraw.tsx` protected by `isAllowedMessageOrigin`.
+  - Initialized DOM Trusted Types policy in `frontend/src/lib/trustedTypes.ts` and enabled frame-ancestors allowlisting in `index.html`.
+
+### Issue #548: Unverified WASM Deployment & Backdoor Risk
+- **Root Cause**: Deployment scripts (`scripts/deploy/deploy-hosted-futurenet.sh`) deployed compiled contract WASM files (e.g. `dao_registry.wasm`, `voting.wasm`) directly to Soroban without cryptographic signature verification. An attacker or corrupted build artifact could introduce a backdoored contract without detection.
+- **Blast Radius**: Deployment of unauthorized contract bytecode on Futurenet/Mainnet capable of manipulating DAO state or voter nullifiers.
+- **Fix Implemented**:
+  - Created `scripts/deploy/verify-wasm-signature.sh` to enforce `cosign` blob / bundle verification and SHA-256 checksum validation prior to contract deployment.
+  - Updated `deploy_contract()` in `deploy-hosted-futurenet.sh` to require signature verification before dispatching deployment transactions.
+  - Created `scripts/sign-wasm.sh` for developer and CI cosign artifact signing.
+  - Added Sigstore Cosign verification step into `.github/workflows/ci.yml`.
+
+## 2. Monitoring & Alerts Added
+- `ZKVoteRelayerUploadValidationAnomaly`: Alerts on abnormal upload validation rejections or TOCTOU lock contention.
+- `ZKVoteRelayerIframeSecurityOriginViolation`: Alerts on blocked cross-origin `postMessage` attempts from unapproved origins.
+- `ZKVoteWasmSignatureVerificationFailure`: Alerts immediately if an unsigned or unverified WASM contract is rejected during deployment.
+
+

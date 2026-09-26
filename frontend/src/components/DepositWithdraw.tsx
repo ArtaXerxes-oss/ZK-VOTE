@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Button } from "./ui/Button";
 import { relayerFetch } from "../lib/api";
+import { isAllowedMessageOrigin } from "../lib/messageOrigin";
 
 type Asset = "USDC" | "EURC";
 
@@ -9,6 +10,34 @@ export default function DepositWithdraw() {
   const [amount, setAmount] = useState("100");
   const [account, setAccount] = useState("");
   const [info, setInfo] = useState<any>(null);
+
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      // Security: Strictly enforce origin check against allowlist (blocks evil.com)
+      if (!isAllowedMessageOrigin(event.origin)) {
+        console.warn("Dropped postMessage from untrusted origin:", event.origin);
+        return;
+      }
+
+      const data = event.data;
+      if (!data || typeof data !== "object") return;
+
+      if (data.type === "SET_RAMP" && data.payload) {
+        if (data.payload.asset && ["USDC", "EURC"].includes(data.payload.asset)) {
+          setAsset(data.payload.asset);
+        }
+        if (typeof data.payload.amount === "string") {
+          setAmount(data.payload.amount);
+        }
+        if (typeof data.payload.account === "string") {
+          setAccount(data.payload.account);
+        }
+      }
+    };
+
+    window.addEventListener("message", handleMessage);
+    return () => window.removeEventListener("message", handleMessage);
+  }, []);
 
   const deposit = async () => {
     try {

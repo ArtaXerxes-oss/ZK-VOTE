@@ -3229,6 +3229,17 @@ export function upsertDao(dao: DaoInput): void {
 }
 
 /**
+ * Update a DAO's thumbnail / metadata CID
+ */
+export function updateDaoThumbnail(daoId: number, thumbnailCid: string): void {
+  const database = getWriteDb();
+  database
+    .prepare("UPDATE daos SET metadata_cid = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+    .run(thumbnailCid, daoId);
+  incrementTransactionCounter();
+}
+
+/**
  * Upsert multiple DAOs in a transaction
  */
 export function upsertDaos(daos: DaoInput[]): void {

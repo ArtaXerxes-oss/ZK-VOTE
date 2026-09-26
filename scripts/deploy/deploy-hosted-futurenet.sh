@@ -81,6 +81,14 @@ deploy_contract() {
   shift 2
   local args=("$@")
 
+  # Sigstore/Cosign verification: verify WASM integrity and signature before deploying
+  if [ -x "$SCRIPT_DIR/verify-wasm-signature.sh" ]; then
+    "$SCRIPT_DIR/verify-wasm-signature.sh" "$wasm" || {
+      echo "ERROR: Cosign signature verification failed for $wasm ($name). Deployment rejected." >&2
+      return 1
+    }
+  fi
+
   local max_attempts=5
   local attempt=1
   local contract_id=""
