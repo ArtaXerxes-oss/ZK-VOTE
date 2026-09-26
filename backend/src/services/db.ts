@@ -229,6 +229,7 @@ const EXPECTED_SCHEMA: Record<string, ExpectedTable> = {
         primaryKey: false,
       },
       { name: "metadata_cid", type: "TEXT", notNull: false, primaryKey: false },
+      { name: "thumbnail_cid", type: "TEXT", notNull: false, primaryKey: false },
       {
         name: "member_count",
         type: "INTEGER",
@@ -1167,6 +1168,7 @@ export function initDb(dbPath?: string): DatabaseType {
       membership_open INTEGER DEFAULT 1,
       members_can_propose INTEGER DEFAULT 0,
       metadata_cid TEXT,
+      thumbnail_cid TEXT,
       member_count INTEGER DEFAULT 0,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
@@ -3234,7 +3236,7 @@ export function upsertDao(dao: DaoInput): void {
 export function updateDaoThumbnail(daoId: number, thumbnailCid: string): void {
   const database = getWriteDb();
   database
-    .prepare("UPDATE daos SET metadata_cid = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+    .prepare("UPDATE daos SET thumbnail_cid = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
     .run(thumbnailCid, daoId);
   incrementTransactionCounter();
 }

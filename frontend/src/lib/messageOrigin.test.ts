@@ -14,9 +14,16 @@ describe("isAllowedMessageOrigin", () => {
     expect(isAllowedMessageOrigin(undefined as any)).toBe(false);
   });
 
-  it("allows trusted soroswap origins", () => {
-    expect(isAllowedMessageOrigin("https://api.soroswap.finance")).toBe(true);
-    expect(isAllowedMessageOrigin("https://app.soroswap.finance")).toBe(true);
-    expect(isAllowedMessageOrigin("https://soroswap.finance")).toBe(true);
+  it("allows trusted soroswap origins only for swap scope", () => {
+    expect(isAllowedMessageOrigin("https://api.soroswap.finance", "swap")).toBe(true);
+    expect(isAllowedMessageOrigin("https://app.soroswap.finance", "swap")).toBe(true);
+    expect(isAllowedMessageOrigin("https://soroswap.finance", "swap")).toBe(true);
+  });
+
+  it("blocks external soroswap origins for payment and ramp scopes", () => {
+    expect(isAllowedMessageOrigin("https://api.soroswap.finance", "payment")).toBe(false);
+    expect(isAllowedMessageOrigin("https://app.soroswap.finance", "payment")).toBe(false);
+    expect(isAllowedMessageOrigin("https://api.soroswap.finance", "ramp")).toBe(false);
+    expect(isAllowedMessageOrigin("https://app.soroswap.finance", "ramp")).toBe(false);
   });
 });

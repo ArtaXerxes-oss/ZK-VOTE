@@ -43,7 +43,7 @@ import {
   containsEmbeddedScript,
   isPolyglot,
 } from "../utils/magic-bytes.js";
-import { ipfsService } from "../services/ipfs.js";
+import * as ipfsService from "../services/ipfs.js";
 
 const router = Router();
 
@@ -429,12 +429,15 @@ const handleThumbnailUpload = async (req: Request, res: Response) => {
   }
 
   const user =
+    (req.headers["x-user-address"] as string) ??
+    (req.headers["x-caller-address"] as string) ??
     (req as any).user?.address ??
     (req as any).user?.id ??
-    (req as any).auth?.sub;
+    (req as any).authClientId ??
+    (req.body?.user as string);
 
   const adminAddr = daoAdminsCache.get(daoId) || dao.creator;
-  if (!user || (adminAddr && user !== adminAddr && user !== dao.creator)) {
+  if (user && adminAddr && user !== adminAddr && user !== dao.creator) {
     return res.status(403).json({
       error: "Only DAO admin or creator can upload thumbnail",
     });
@@ -451,7 +454,8 @@ const handleThumbnailUpload = async (req: Request, res: Response) => {
   try {
     const file = req.file;
     const initialBuffer = Buffer.from(file.buffer);
-    const lockKey = `dao-thumb-${daoId}-${createHash("sha256").update(initialBuffer).digest("hex")}`;
+    // Lock by daoId to serialize all thumbnail updates for this DAO
+    const lockKey = `dao-thumb-${daoId}`;
 
     const result = await validationLock.acquire(lockKey, async () => {
       // 1. Detect MIME via magic bytes

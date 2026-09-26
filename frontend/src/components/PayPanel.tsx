@@ -14,9 +14,9 @@ export default function PayPanel() {
 
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
-      // Security: Strictly enforce origin check against allowlist (blocks evil.com)
-      if (!isAllowedMessageOrigin(event.origin)) {
-        console.warn("Dropped postMessage from untrusted origin:", event.origin);
+      // Security: Strictly enforce same-origin for payments (blocks evil.com and external embedders)
+      if (!isAllowedMessageOrigin(event.origin, "payment")) {
+        console.warn("Dropped payment postMessage from untrusted or non-same origin:", event.origin);
         return;
       }
 
