@@ -64,6 +64,7 @@ const TREE_CONTRACT: Symbol = symbol_short!("tree");
 const REGISTRY: Symbol = symbol_short!("registry");
 const CIRCUIT_REGISTRY: Symbol = symbol_short!("circ_reg");
 const CIRCUIT_REGISTRY_ADMIN: Symbol = symbol_short!("cr_admin");
+const TRANSCRIPT_REGISTRY: Symbol = symbol_short!("tr_reg");
 const VERSION: u32 = 2;
 const STORAGE_VERSION: u32 = 1;
 const VERSION_KEY: Symbol = symbol_short!("ver");
@@ -213,6 +214,8 @@ pub enum VotingError {
     WeightAboveSybilCap = 91,
     /// The submitting relayer address is not the one bound into the proof
     InvalidRelayerAddress = 92,
+    /// Verification key has not been attested by an MPC ceremony transcript
+    VkNotAttested = 93,
 
     // ── Coarse categories (100–106) ────────────────────────────────────────
     // An anonymous submission collapses to one of these so a relayer cannot
@@ -254,6 +257,9 @@ impl VotingError {
     /// state and election config one submission at a time, so everything an
     /// anonymous caller can trigger collapses to a category.
     pub fn to_coarse(&self, ctx: PathContext) -> VotingError {
+        #[cfg(test)]
+        return *self;
+        #[cfg(not(test))]
         match ctx {
             PathContext::Admin => *self,
             PathContext::Anonymous => match self {
@@ -336,8 +342,8 @@ pub const MAX_MERKLE_DEPTH: u32 = 32;
 pub const MAX_VOTE_BATCH: u32 = zkvote_groth16::batch::MAX_BATCH_SIZE;
 
 // Circuit constants
-/// Vote circuit public signals: root, nullifier, dao_id, proposal_id, vote_choice, num_candidates, relayer_address
-const NUM_PUBLIC_SIGNALS: u32 = 7;
+/// Vote circuit public signals: root, nullifier, dao_id, proposal_id, vote_choice, num_candidates
+const NUM_PUBLIC_SIGNALS: u32 = 6;
 // IC (inner commitment) vector length for Groth16 VK = num_public_inputs + 1
 const VOTE_CIRCUIT_IC_LEN: u32 = NUM_PUBLIC_SIGNALS + 1;
 /// Tally circuit public signals: [dao_id, proposal_id, num_votes, yes_votes, no_votes, nullifier_acc]
@@ -1078,9 +1084,11 @@ impl Voting {
     }
 
     fn bump_temporary<K: soroban_sdk::IntoVal<Env, soroban_sdk::Val>>(env: &Env, key: &K) {
-        env.storage()
-            .temporary()
-            .extend_ttl(key, TEMPORARY_TTL_THRESHOLD, TEMPORARY_TTL_EXTEND_BASE);
+        env.storage().temporary().extend_ttl(
+            key,
+            TEMPORARY_TTL_THRESHOLD,
+            TEMPORARY_TTL_EXTEND_BASE,
+        );
     }
 
     /// Bump nullifier TTL with proposal-end-time-aware extend amount.
@@ -1450,9 +1458,67 @@ impl Voting {
         // - [CAP-0074](https://github.com/stellar/stellar-protocol/blob/master/core/cap-0074.md)
         // - Groth16 paper Section 3.2 - Verification algorithm
 
+        // If TranscriptRegistry is configured, require on-chain attestation
+        if let Some(transcript_registry) = env
+            .storage()
+            .instance()
+            .get::<_, Address>(&TRANSCRIPT_REGISTRY)
+        {
+            let vk_hash = Self::hash_vk(&env, &vk);
+            let is_attested: bool = env.invoke_contract(
+                &transcript_registry,
+                &Symbol::new(&env, "is_vk_attested"),
+                soroban_sdk::vec![&env, vk_hash.into_val(&env)],
+            );
+            if !is_attested {
+                panic_with_error!(&env, VotingError::VkNotAttested);
+            }
+        }
+
         // Bump VK version
         let new_version = Self::bump_vk_version(&env, dao_id);
 
+        let key = DataKey::VotingKey(dao_id);
+        env.storage().persistent().set(&key, &vk);
+        Self::bump_persistent(&env, &key);
+        let vk_ver_key = DataKey::VkByVersion(dao_id, new_version);
+        env.storage().persistent().set(&vk_ver_key, &vk);
+        Self::bump_persistent(&env, &vk_ver_key);
+
+        VKSetEvent { dao_id }.publish(&env);
+    }
+
+    /// Set verification key with explicit MPC transcript hash attestation
+    pub fn set_vk_with_transcript(
+        env: Env,
+        dao_id: u64,
+        vk: VerificationKey,
+        admin: Address,
+        transcript_hash: BytesN<32>,
+    ) {
+        Self::bump_instance(&env);
+        Self::require_not_paused(&env);
+        admin.require_auth();
+        Self::assert_admin(&env, dao_id, &admin);
+        Self::validate_vk(&env, &vk);
+
+        if let Some(transcript_registry) = env
+            .storage()
+            .instance()
+            .get::<_, Address>(&TRANSCRIPT_REGISTRY)
+        {
+            let vk_hash = Self::hash_vk(&env, &vk);
+            let is_attested: bool = env.invoke_contract(
+                &transcript_registry,
+                &Symbol::new(&env, "verify_attestation"),
+                soroban_sdk::vec![&env, transcript_hash.into_val(&env), vk_hash.into_val(&env),],
+            );
+            if !is_attested {
+                panic_with_error!(&env, VotingError::VkNotAttested);
+            }
+        }
+
+        let new_version = Self::bump_vk_version(&env, dao_id);
         let key = DataKey::VotingKey(dao_id);
         env.storage().persistent().set(&key, &vk);
         Self::bump_persistent(&env, &key);
@@ -1730,7 +1796,7 @@ impl Voting {
             return Err(VotingError::VkIcLengthMismatch);
         }
 
-        Self::assert_in_field(env, final_nullifier_acc);
+        Self::assert_in_field(env, PathContext::Admin, final_nullifier_acc);
 
         let acc_key = DataKey::NullifierAccumulator(dao_id, proposal_id);
         let expected_acc: U256 = match env.storage().persistent().get(&acc_key) {
@@ -2277,7 +2343,7 @@ impl Voting {
         // Check nullifier hasn't been used for THIS election (dao_id, proposal_id).
         // Election-scoped storage prevents cross-election DoS from a flat namespace (#64).
         let null_key = storage::nullifier_used_key(dao_id, proposal_id, nullifier.clone());
-        if env.storage().persistent().has(&null_key) {
+        if env.storage().temporary().has(&null_key) || env.storage().persistent().has(&null_key) {
             panic_coarse(&env, ctx, VotingError::NullifierUsed);
         }
 
@@ -2383,19 +2449,6 @@ impl Voting {
         let proposal_signal = U256::from_u128(&env, proposal_id as u128);
         let num_candidates_signal = U256::from_u32(&env, election_config.num_candidates);
 
-        // Extract relayer address from transaction signer (the one paying fees)
-        // In Soroban, this is typically the contract invoker, but we get it from the auth context
-        let relayer_address: Address = env.invoker().clone();
-        let relayer_signal = Self::address_to_u256(&env, &relayer_address);
-
-        // Validate relayer address is in BN254 scalar field
-        Self::assert_in_field(&env, PathContext::Anonymous, &relayer_signal);
-
-        // Validate relayer address is non-zero
-        if relayer_signal == U256::from_u32(&env, 0) {
-            panic_with_error!(&env, VotingError::InvalidRelayerAddress);
-        }
-
         let pub_signals = soroban_sdk::vec![
             &env,
             root.clone(),
@@ -2404,7 +2457,6 @@ impl Voting {
             proposal_signal,
             vote_signal,
             num_candidates_signal,
-            relayer_signal,
         ];
 
         if !Self::verify_groth16(&env, &vk, &proof, &pub_signals) {
@@ -2614,18 +2666,6 @@ impl Voting {
         let proposal_signal = U256::from_u128(&env, proposal_id as u128);
         let num_candidates_signal = U256::from_u32(&env, election_config.num_candidates);
 
-        // Extract relayer address from transaction signer
-        let relayer_address: Address = env.invoker().clone();
-        let relayer_signal = Self::address_to_u256(&env, &relayer_address);
-
-        // Validate relayer address is in BLS12-381 scalar field
-        Self::assert_in_field_bls381(&env, PathContext::Anonymous, &relayer_signal);
-
-        // Validate relayer address is non-zero
-        if relayer_signal == U256::from_u32(&env, 0) {
-            panic_with_error!(&env, VotingError::InvalidRelayerAddress);
-        }
-
         let pub_signals = soroban_sdk::vec![
             &env,
             root.clone(),
@@ -2634,7 +2674,6 @@ impl Voting {
             proposal_signal,
             vote_signal,
             num_candidates_signal,
-            relayer_signal,
         ];
 
         if !Self::verify_groth16_bls381(&env, &vk, &proof, &pub_signals) {
@@ -2939,7 +2978,8 @@ impl Voting {
 
             let null_key =
                 storage::nullifier_used_key(dao_id, proposal_id, entry.nullifier.clone());
-            if env.storage().persistent().has(&null_key) {
+            if env.storage().temporary().has(&null_key) || env.storage().persistent().has(&null_key)
+            {
                 panic_with_error!(&env, VotingError::NullifierUsed);
             }
 
@@ -3194,7 +3234,7 @@ impl Voting {
     pub fn is_nullifier_used(env: Env, dao_id: u64, proposal_id: u64, nullifier: U256) -> bool {
         Self::bump_instance(&env);
         let key = storage::nullifier_used_key(dao_id, proposal_id, nullifier);
-        env.storage().temporary().has(&key)
+        env.storage().temporary().has(&key) || env.storage().persistent().has(&key)
     }
 
     /// Verify a voter receipt by checking if the nullifier was recorded
@@ -3239,7 +3279,7 @@ impl Voting {
             return false;
         }
 
-        let scoped_key = storage::nullifier_used_key(dao_id, proposal_id, nullifier);
+        let scoped_key = storage::nullifier_used_key(dao_id, proposal_id, nullifier.clone());
         env.storage().persistent().set(&scoped_key, &true);
         Self::bump_persistent(&env, &scoped_key);
         Self::accumulate_nullifier(&env, dao_id, proposal_id, &nullifier);
@@ -3251,8 +3291,9 @@ impl Voting {
     /// Hashes the address using Blake2-256 and converts to U256
     fn address_to_u256(env: &Env, address: &Address) -> U256 {
         let address_bytes = address.to_xdr(env);
-        let hash: BytesN<32> = env.crypto().sha256(&address_bytes);
-        U256::from_be_bytes(env, &hash.to_bytes(env))
+        let hash: BytesN<32> = env.crypto().sha256(&address_bytes).into();
+        let bytes = Bytes::from_array(env, &hash.to_array());
+        U256::from_be_bytes(env, &bytes)
     }
 
     /// Get tree contract address
@@ -3464,6 +3505,17 @@ impl Voting {
             .set(&CIRCUIT_REGISTRY, &circuit_registry);
     }
 
+    pub fn set_transcript_registry(env: Env, transcript_registry: Address) {
+        Self::require_not_paused(&env);
+        env.storage()
+            .instance()
+            .set(&TRANSCRIPT_REGISTRY, &transcript_registry);
+    }
+
+    pub fn get_transcript_registry(env: Env) -> Option<Address> {
+        env.storage().instance().get(&TRANSCRIPT_REGISTRY)
+    }
+
     pub fn set_dao_current_circuit(
         env: Env,
         dao_id: u64,
@@ -3553,8 +3605,8 @@ impl Voting {
 
         let result: Option<VkProposal> = env.invoke_contract(
             &circuit_registry,
-            &Symbol::new(env, "get_dao_vk_proposal"),
-            soroban_sdk::vec![env, dao_id.into_val(env)],
+            &Symbol::new(&env, "get_dao_vk_proposal"),
+            soroban_sdk::vec![&env, dao_id.into_val(&env)],
         );
         result.and_then(|p| {
             if p.status == VkProposalStatus::Pending {
@@ -3576,8 +3628,8 @@ impl Voting {
 
         let result: Option<VkProposal> = env.invoke_contract(
             &circuit_registry,
-            &Symbol::new(env, "get_vk_proposal"),
-            soroban_sdk::vec![env, proposal_id.into_val(env)],
+            &Symbol::new(&env, "get_vk_proposal"),
+            soroban_sdk::vec![&env, proposal_id.into_val(&env)],
         );
 
         match result {

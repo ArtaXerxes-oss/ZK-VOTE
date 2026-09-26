@@ -26,6 +26,7 @@ import { kysely } from "./services/kysely.js";
 import * as dbService from "./services/db.js";
 import { queryInstanceTTLWithFallback, queryPersistentTTLWithFallback, needsRenewal, isInGracePeriod, formatRemaining, } from "./services/ttl-checker.js";
 import { markDegraded, markHealthy } from "./services/service-health.js";
+import { defaultJobScheduler } from "./services/job-scheduler.js";
 /**
  * Construct and wire every service. Must be called after `validateEnv()`.
  * This is the only place that reaches for the module singletons of the
@@ -169,8 +170,9 @@ export function buildAppServices() {
             "exclusion-proof",
             "sync",
             "bridge",
+            "job-scheduler",
         ],
     });
-    return { config, logger, stellar };
+    return { config, logger, stellar, scheduler: defaultJobScheduler };
 }
 //# sourceMappingURL=composition-root.js.map

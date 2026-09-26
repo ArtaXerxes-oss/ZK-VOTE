@@ -16,7 +16,7 @@ const router = Router();
  * GET /daos - Get all DAOs with limit/offset pagination
  */
 router.get("/daos", queryLimiter, validateQuery(daosQuerySchema), (async (req, res) => {
-    const { limit, offset, user } = req.validatedQuery;
+    const { limit, offset, user, search, membershipType } = req.validatedQuery;
     const pageOffset = offset;
     try {
         // The DAO list is served from the sync cache whether or not a user was

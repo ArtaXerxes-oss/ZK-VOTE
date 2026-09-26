@@ -22,6 +22,7 @@ export interface AuditLog {
     prev_hash: string | null;
     request_id: string | null;
     status_code: number | null;
+    tenant_id: Generated<string | null>;
     timestamp: Generated<string>;
 }
 export interface CommentFlags {
@@ -56,6 +57,7 @@ export interface Events {
     data: string | null;
     id: Generated<number | null>;
     ledger: number | null;
+    tenant_id: Generated<string | null>;
     timestamp: string;
     tx_hash: string | null;
     type: string;
@@ -76,10 +78,18 @@ export interface PartitionRegistry {
     created_at: Generated<string | null>;
     dao_id: Generated<number | null>;
 }
+export interface PaymentJobs {
+    amount: Generated<number | bigint | string>;
+    created_at: Generated<string | null>;
+    id: string;
+    ops: string;
+    tenant_id: Generated<string | null>;
+}
 export interface TransactionLog {
     created_at: Generated<string | null>;
     nullifier_hash: string | null;
     status: string;
+    tenant_id: Generated<string | null>;
     tx_hash: string;
     updated_at: Generated<string | null>;
 }
@@ -113,6 +123,7 @@ export interface DB {
     hidden_comments: HiddenComments;
     metadata: Metadata;
     partition_registry: PartitionRegistry;
+    payment_jobs: PaymentJobs;
     transaction_log: TransactionLog;
     ttl_cost_log: TtlCostLog;
     ttl_tracking: TtlTracking;

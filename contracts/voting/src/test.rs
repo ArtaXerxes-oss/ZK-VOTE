@@ -163,6 +163,58 @@ mod mock_sbt {
     }
 }
 
+// Mock Transcript Registry contract
+mod mock_transcript_registry {
+    use soroban_sdk::{contract, contractimpl, contracttype, BytesN, Env};
+
+    #[contracttype]
+    pub enum DataKey {
+        AttestedVk(BytesN<32>),
+        Attestation(BytesN<32>, BytesN<32>),
+    }
+
+    #[contract]
+    pub struct MockTranscriptRegistry;
+
+    #[contractimpl]
+    impl MockTranscriptRegistry {
+        pub fn set_attested(env: Env, vk_hash: BytesN<32>, attested: bool) {
+            env.storage()
+                .persistent()
+                .set(&DataKey::AttestedVk(vk_hash), &attested);
+        }
+
+        pub fn set_transcript_attestation(
+            env: Env,
+            transcript_hash: BytesN<32>,
+            vk_hash: BytesN<32>,
+            attested: bool,
+        ) {
+            env.storage()
+                .persistent()
+                .set(&DataKey::Attestation(transcript_hash, vk_hash), &attested);
+        }
+
+        pub fn is_vk_attested(env: Env, vk_hash: BytesN<32>) -> bool {
+            env.storage()
+                .persistent()
+                .get(&DataKey::AttestedVk(vk_hash))
+                .unwrap_or(false)
+        }
+
+        pub fn verify_attestation(
+            env: Env,
+            transcript_hash: BytesN<32>,
+            vk_hash: BytesN<32>,
+        ) -> bool {
+            env.storage()
+                .persistent()
+                .get(&DataKey::Attestation(transcript_hash, vk_hash))
+                .unwrap_or(false)
+        }
+    }
+}
+
 fn setup_env_with_registry() -> (Env, Address, Address, Address, Address, Address) {
     let env = Env::default();
     env.mock_all_auths();
@@ -2887,7 +2939,7 @@ fn test_guardian_can_pause_and_unpause() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #29)")]
+#[should_panic(expected = "Error(Contract, #76)")]
 fn test_pause_blocks_writes_but_allows_reads() {
     let (env, voting_id, _, _, registry_id, admin) = setup_env_with_registry();
     let client = VotingClient::new(&env, &voting_id);
@@ -2916,7 +2968,7 @@ fn test_pause_expires_after_max_duration() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #30)")]
+#[should_panic(expected = "Error(Contract, #77)")]
 fn test_non_guardian_cannot_pause() {
     let (env, voting_id, _, _, _, _) = setup_env_with_registry();
     VotingClient::new(&env, &voting_id).pause(&Address::generate(&env));
@@ -3273,6 +3325,7 @@ fn test_recursive_tally_submission() {
     // Set recursive VK
     let vk_bytes = Bytes::from_slice(&env, &[1, 2, 3, 4]);
     client.set_recursive_vk(&dao_id, &vk_bytes, &admin);
+    client.set_tally_vk(&dao_id, &create_dummy_vk(&env), &admin);
     let stored_vk = client.get_recursive_vk(&dao_id);
     assert_eq!(stored_vk, Some(vk_bytes));
 
@@ -3291,8 +3344,8 @@ fn test_recursive_tally_submission() {
     let num_votes = 1000u64;
     let yes_votes = 650u64;
     let no_votes = 350u64;
-    let final_acc = U256::from_u32(&env, 99999);
-    let proof = Bytes::from_slice(&env, &[0xDE, 0xAD, 0xBE, 0xEF]);
+    let final_acc = U256::from_u32(&env, 0);
+    let proof = create_dummy_proof(&env);
 
     client.submit_recursive_tally(
         &dao_id, &prop_id, &num_votes, &yes_votes, &no_votes, &final_acc, &proof,
@@ -3892,7 +3945,7 @@ fn test_recursive_tally_overflow_fails() {
         env.storage().persistent().set(&key, &proposal);
     });
 
-    let proof = Bytes::from_array(&env, &[1u8; 32]);
+    let proof = create_dummy_proof(&env);
     let nullifier_acc = U256::from_u32(&env, 1);
 
     let res = voting_client.try_submit_recursive_tally(
@@ -4436,4 +4489,70 @@ fn test_cast_votes_uses_the_depth_key_when_one_is_declared() {
     ];
     assert_eq!(voting.cast_votes(&1u64, &proposal_id, &votes), 2);
     assert_eq!(voting.get_results(&1u64, &proposal_id), (1, 1));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #93)")]
+fn test_transcript_registry_gating_blocks_unattested_vk() {
+    let (env, voting_id, _tree_id, _sbt_id, registry_id, _member) = setup_env_with_registry();
+    let voting = VotingClient::new(&env, &voting_id);
+    let registry = mock_registry::MockRegistryClient::new(&env, &registry_id);
+    let admin = Address::generate(&env);
+    registry.set_admin(&1u64, &admin);
+
+    let transcript_reg_id = env.register(mock_transcript_registry::MockTranscriptRegistry, ());
+    voting.set_transcript_registry(&transcript_reg_id);
+
+    // VK is not attested in transcript registry -> must panic with VkNotAttested (#93)
+    let dummy_vk = create_dummy_vk(&env);
+    voting.set_vk(&1u64, &dummy_vk, &admin);
+}
+
+#[test]
+fn test_transcript_registry_gating_allows_attested_vk() {
+    let (env, voting_id, _tree_id, _sbt_id, registry_id, _member) = setup_env_with_registry();
+    let voting = VotingClient::new(&env, &voting_id);
+    let registry = mock_registry::MockRegistryClient::new(&env, &registry_id);
+    let admin = Address::generate(&env);
+    registry.set_admin(&1u64, &admin);
+
+    let transcript_reg_id = env.register(mock_transcript_registry::MockTranscriptRegistry, ());
+    voting.set_transcript_registry(&transcript_reg_id);
+
+    let dummy_vk = create_dummy_vk(&env);
+    let vk_hash = Voting::hash_vk(&env, &dummy_vk);
+
+    let transcript_client =
+        mock_transcript_registry::MockTranscriptRegistryClient::new(&env, &transcript_reg_id);
+    transcript_client.set_attested(&vk_hash, &true);
+
+    // Now set_vk must succeed because it is attested
+    voting.set_vk(&1u64, &dummy_vk, &admin);
+
+    let stored_vk = voting.vk_for_version(&1u64, &1u32);
+    assert_eq!(Voting::hash_vk(&env, &stored_vk), vk_hash);
+}
+
+#[test]
+fn test_set_vk_with_transcript_attestation() {
+    let (env, voting_id, _tree_id, _sbt_id, registry_id, _member) = setup_env_with_registry();
+    let voting = VotingClient::new(&env, &voting_id);
+    let registry = mock_registry::MockRegistryClient::new(&env, &registry_id);
+    let admin = Address::generate(&env);
+    registry.set_admin(&1u64, &admin);
+
+    let transcript_reg_id = env.register(mock_transcript_registry::MockTranscriptRegistry, ());
+    voting.set_transcript_registry(&transcript_reg_id);
+
+    let dummy_vk = create_dummy_vk(&env);
+    let vk_hash = Voting::hash_vk(&env, &dummy_vk);
+    let transcript_hash = BytesN::from_array(&env, &[42u8; 32]);
+
+    let transcript_client =
+        mock_transcript_registry::MockTranscriptRegistryClient::new(&env, &transcript_reg_id);
+    transcript_client.set_transcript_attestation(&transcript_hash, &vk_hash, &true);
+
+    voting.set_vk_with_transcript(&1u64, &dummy_vk, &admin, &transcript_hash);
+    let stored_vk = voting.vk_for_version(&1u64, &1u32);
+    assert_eq!(Voting::hash_vk(&env, &stored_vk), vk_hash);
 }

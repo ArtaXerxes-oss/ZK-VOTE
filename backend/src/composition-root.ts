@@ -46,6 +46,7 @@ import {
   formatRemaining,
 } from "./services/ttl-checker.js";
 import { markDegraded, markHealthy } from "./services/service-health.js";
+import { JobScheduler, defaultJobScheduler } from "./services/job-scheduler.js";
 
 /** The explicitly-wired service container. */
 export interface AppServices {
@@ -55,6 +56,8 @@ export interface AppServices {
   logger: typeof logger;
   /** The Stellar/Soroban surface, injected into consumer services. */
   stellar: StellarContext;
+  /** Background job scheduler for maintenance and session cleanup. */
+  scheduler: JobScheduler;
 }
 
 /**
@@ -209,8 +212,9 @@ export function buildAppServices(): AppServices {
       "exclusion-proof",
       "sync",
       "bridge",
+      "job-scheduler",
     ],
   });
 
-  return { config, logger, stellar };
+  return { config, logger, stellar, scheduler: defaultJobScheduler };
 }

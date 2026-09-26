@@ -5,6 +5,11 @@
  * cannot vote in future proposals. Coordinates with the membership tree contract
  * to check revocation status.
  */
+import type { Database as DatabaseType } from "better-sqlite3";
+export declare function initExclusionProof(deps: {
+    getDb: () => DatabaseType;
+    log: (...args: any[]) => void;
+}): void;
 /** Base shape of a Groth16 proof with arbitrary public inputs. */
 export interface Proof {
     proof: {

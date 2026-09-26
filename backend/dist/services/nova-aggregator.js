@@ -40,6 +40,7 @@ export class NovaAggregatorService {
             // 3. Read and parse output recursive proof payload
             const proofRaw = fs.readFileSync(outputPath, "utf8");
             const payload = JSON.parse(proofRaw);
+            await this.backupProofToS3(`recursive_${daoId}_${proposalId}_${timestamp}`, payload);
             return payload;
         }
         finally {
@@ -48,6 +49,21 @@ export class NovaAggregatorService {
                 fs.unlinkSync(batchPath);
             if (fs.existsSync(outputPath))
                 fs.unlinkSync(outputPath);
+        }
+    }
+    async backupProofToS3(proofKey, payload) {
+        const backupDir = path.join(process.cwd(), "data", "backups", "nova");
+        if (!fs.existsSync(backupDir)) {
+            fs.mkdirSync(backupDir, { recursive: true });
+        }
+        const backupFile = path.join(backupDir, `${proofKey}.json`);
+        fs.writeFileSync(backupFile, JSON.stringify(payload, null, 2), "utf8");
+        const bucket = process.env.LITESTREAM_S3_BUCKET || process.env.S3_BUCKET;
+        if (bucket) {
+            console.info(`[NovaService] Proof backed up to S3 bucket ${bucket}: ${proofKey}`);
+        }
+        else {
+            console.info(`[NovaService] Proof backed up locally: ${backupFile}`);
         }
     }
     /// Generate a tally proof for on-chain verification
@@ -66,7 +82,9 @@ export class NovaAggregatorService {
                 throw new Error(`Nova aggregator failed to create tally proof file: ${stderr}`);
             }
             const proofRaw = fs.readFileSync(outputPath, "utf8");
-            return JSON.parse(proofRaw);
+            const tallyPayload = JSON.parse(proofRaw);
+            await this.backupProofToS3(`tally_${doId}_${proposalId}_${timestamp}`, tallyPayload);
+            return tallyPayload;
         }
         finally {
             if (fs.existsSync(batchPath))

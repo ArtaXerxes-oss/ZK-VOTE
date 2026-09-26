@@ -58,7 +58,18 @@ export function validateQuery(schema) {
             });
         }
         // Replace query with validated/transformed data
-        req.query = result.data;
+        // Express 5 makes req.query getter-only; use defineProperty to avoid "only a getter" error
+        try {
+            req.query = result.data;
+        }
+        catch {
+            Object.defineProperty(req, "query", {
+                value: result.data,
+                writable: true,
+                configurable: true,
+                enumerable: true,
+            });
+        }
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         req.validatedQuery = result.data;
         next();
@@ -78,7 +89,17 @@ export function validateParams(schema) {
             });
         }
         // Replace params with validated/transformed data
-        req.params = result.data;
+        try {
+            req.params = result.data;
+        }
+        catch {
+            Object.defineProperty(req, "params", {
+                value: result.data,
+                writable: true,
+                configurable: true,
+                enumerable: true,
+            });
+        }
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         req.validatedParams = result.data;
         next();

@@ -229,6 +229,7 @@ export function getMigrationStatus(
  * Returns true if lock acquired, false if already locked.
  */
 function acquireLock(database: DatabaseType): boolean {
+  database.exec("CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT)");
   const existing = database
     .prepare("SELECT value FROM metadata WHERE key = ?")
     .get(LOCK_KEY) as { value: string } | undefined;
@@ -259,6 +260,7 @@ function acquireLock(database: DatabaseType): boolean {
  * Release the migration lock.
  */
 function releaseLock(database: DatabaseType): void {
+  database.exec("CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT)");
   database.prepare("DELETE FROM metadata WHERE key = ?").run(LOCK_KEY);
 }
 

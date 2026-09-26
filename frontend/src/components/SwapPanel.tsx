@@ -17,7 +17,7 @@ export default function SwapPanel() {
       const res = await relayerFetch(`/swap/quote?from=${from}&to=${to}&amount=${amount}`);
       const text = await res.text();
       let j: any = {};
-      try { j = text ? JSON.parse(text) : {}; } catch {}
+      try { j = text ? JSON.parse(text) : {}; } catch { j = {}; }
       if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
       setQuote(j.destAmount || j.quote || `${amount} ${to} (real Horizon)`);
     } catch (e: any) {

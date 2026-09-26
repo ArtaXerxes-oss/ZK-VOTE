@@ -37,3 +37,48 @@ groups:
         annotations:
           summary: ZKVote database write connection is unhealthy
           description: The relayer write database connection has been unhealthy for 5 minutes.
+      - alert: ZKVoteRelayerHighUnauthenticatedRejections
+        expr: sum(rate(zkvote_unauthenticated_rejection_total[5m])) > 10
+        for: 5m
+        labels:
+          severity: warning
+          service: zkvote-relayer
+        annotations:
+          summary: High rate of unauthenticated requests rejected
+          description: More than 10 unauthenticated requests per second have been rejected for 5 minutes.
+      - alert: ZKVoteRelayerCrossTenantViolation
+        expr: sum(rate(zkvote_cross_tenant_denial_total[5m])) > 0
+        for: 1m
+        labels:
+          severity: critical
+          service: zkvote-relayer
+        annotations:
+          summary: Cross-tenant access denial detected
+          description: Cross-tenant isolation violation attempted on relayer resources.
+      - alert: ZKVoteRelayerReconciliationMismatch
+        expr: sum(rate(zkvote_reconciliation_mismatch_total[5m])) > 0
+        for: 2m
+        labels:
+          severity: critical
+          service: zkvote-relayer
+        annotations:
+          summary: State reconciliation mismatch detected
+          description: State divergence detected between SQLite cache and Soroban on-chain state.
+      - alert: ZKVoteRelayerRateLimitStoreExhaustion
+        expr: zkvote_rate_limit_store_size > 50000
+        for: 5m
+        labels:
+          severity: warning
+          service: zkvote-relayer
+        annotations:
+          summary: Rate limit store capacity elevated
+          description: In-memory rate limit store tracking over 50,000 active keys.
+      - alert: ZKVoteRelayerBatchPartialFailureSpike
+        expr: sum(rate(zkvote_batch_partial_failure_total[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+          service: zkvote-relayer
+        annotations:
+          summary: Batch partial failure rate elevated
+          description: Elevated partial failures observed in multi-item batch execution.

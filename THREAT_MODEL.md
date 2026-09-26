@@ -556,3 +556,40 @@ that limits rogue VK swaps:
   enum.
 - `backend/src/routes/circuits.ts`: REST endpoints for proposal lifecycle.
 - `frontend/src/components/CircuitUpgradePanel.tsx`: UI for pending proposals.
+
+## Groth16 MPC Toxic Waste Transcript Verification & On-Chain TranscriptRegistry Gating
+
+### Threat Analysis: Single-Laptop Setup Toxic Waste & Proof Forgery
+Groth16 zk-SNARK security relies strictly on the destruction of the secret trapdoor elements ($\tau, \alpha, \beta, \gamma, \delta$) generated during the structured reference string (SRS) ceremony.
+In an unmitigated "single-laptop setup", a single ceremony runner evaluates Phase 2 parameters locally:
+- **Toxic Waste Retention**: The operator retains the evaluation scalar $\tau$.
+- **Proof Forgery Capability**: Knowing $\tau$, the operator can calculate polynomial quotient evaluations directly without satisfying R1CS constraints.
+- **Impact on 262k Merkle Set**: An attacker can fabricate arbitrary Groth16 proofs proving inclusion of arbitrary unminted commitments within the 262,144-leaf anonymity tree without possessing valid secrets or membership SBTs.
+- **Composition Failure**: If contracts allow registration of verification keys (`Voting.set_vk`) without verifying cryptographic proof of a multi-contributor ceremony transcript, the entire voting integrity collapses to the honesty of a single setup participant.
+
+### Mitigation Architecture
+
+1. **Multi-Party Computation (MPC) Phase 2 Ceremony**:
+   - Requires $\ge 3$ distinct independent participants (`MIN_MPC_CONTRIBUTORS = 3`).
+   - 1-of-N Honest Contributor Security: As long as at least ONE contributor generates honest entropy and destroys their local intermediate secrets, the composite toxic waste $\tau = \prod \tau_i$ cannot be recovered.
+   - Deterministic contribution chaining: Contribution $i$ must build on contribution $i-1$, cryptographically hashed via SHA-256.
+   - Public Random Beacon: A final public entropy beacon (Bitcoin block hash or drand) is iteratively hashed 10 times and applied to the final zkey to seal the parameter sequence against contributor bias.
+
+2. **On-Chain Transcript Registry (`contracts/transcript-registry`)**:
+   - Decoupled registry storing ceremony metadata, contributor identity hashes, contribution file hashes, and random beacon proofs.
+   - Verification logic verifies contributor count meets or exceeds threshold (`contributors.len() >= MIN_MPC_CONTRIBUTORS`), verifies non-empty beacon hashes, and records the derived VK hash.
+   - Emits `TranscriptRegisteredEvent` and `ContributionRecordedEvent`.
+
+3. **Gating `Voting.set_vk` on Transcript Attestation**:
+   - `Voting.set_vk` checks `transcript_registry.is_vk_attested(&vk_hash)`.
+   - Any attempt to set an unattested verification key fails immediately with `VotingError::VkNotAttested`.
+   - Guarantees that neither a rogue DAO admin nor compromised relayer can register an unverified or privately forged zkey.
+
+4. **Client-Side WASM Validation**:
+   - The prover Web Worker (`proof.worker.ts`) inspects WASM binary magic bytes (`\0asm`) before execution to reject corrupted or spoofed proving modules.
+
+5. **Formal Verification (TLA+)**:
+   - State-machine verification in `formal-model/TranscriptRegistry.tla` formally proves:
+     - `UnattestedVKNeverActive`: An unattested verification key can never be set as active in voting.
+     - `MinContributorsEnforced`: No transcript with $< 3$ contributors can ever be verified.
+

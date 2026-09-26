@@ -26,12 +26,9 @@ kill_timeout = "35s"
 [deploy]
   # Rolling deploy: the new machine must pass its health checks before the
   # old one is stopped, so there's no window with zero healthy instances.
-  # Migrations are NOT run via release_command: the SQLite data volume can
-  # only be attached to one machine at a time, so a separate release
-  # machine couldn't mount it anyway. Migrations already run automatically
-  # on boot in db.ts's initDb() (idempotent, lock-guarded) — see
-  # DEPLOYMENT.md.
+  # release_command runs migration status check before deployment finishes.
   strategy = "rolling"
+  release_command = "node --enable-source-maps dist/services/migrate.js status"
 
 [http_service]
   internal_port = 8080

@@ -572,9 +572,39 @@
                   }
                 ]
               },
-              "durability": "persistent",
+              "durability": "temporary",
               "val": {
                 "bool": true
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 259920
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "NullifierAccumulator"
+                  },
+                  {
+                    "u64": "1"
+                  },
+                  {
+                    "u64": "1"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u256": "1750081901985276867448403250627871227010121600395154041317992596215281945319"
               }
             }
           },
@@ -806,6 +836,36 @@
               "durability": "persistent",
               "val": {
                 "bytes": "878b0bcff7c5e5b8dd7e50f3c92fa7c8fb64fac95bb281312d08b8852322b0d1"
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 535680
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "ProposalEndTime"
+                  },
+                  {
+                    "u64": "1"
+                  },
+                  {
+                    "u64": "1"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u64": "3600"
               }
             }
           },

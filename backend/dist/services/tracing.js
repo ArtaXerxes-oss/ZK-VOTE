@@ -242,4 +242,5 @@ export async function withSpan(name, attributes, operation, options = {}) {
         });
     }
 }
+export function initializeTelemetry() { }
 //# sourceMappingURL=tracing.js.map

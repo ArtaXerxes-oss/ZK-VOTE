@@ -101,11 +101,29 @@ export class NovaAggregatorService {
       const proofRaw = fs.readFileSync(outputPath, "utf8");
       const payload: RecursiveProofPayload = JSON.parse(proofRaw);
 
+      await this.backupProofToS3(`recursive_${daoId}_${proposalId}_${timestamp}`, payload);
+
       return payload;
     } finally {
       // Cleanup transient files
       if (fs.existsSync(batchPath)) fs.unlinkSync(batchPath);
       if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+    }
+  }
+
+  async backupProofToS3(proofKey: string, payload: any): Promise<void> {
+    const backupDir = path.join(process.cwd(), "data", "backups", "nova");
+    if (!fs.existsSync(backupDir)) {
+      fs.mkdirSync(backupDir, { recursive: true });
+    }
+    const backupFile = path.join(backupDir, `${proofKey}.json`);
+    fs.writeFileSync(backupFile, JSON.stringify(payload, null, 2), "utf8");
+
+    const bucket = process.env.LITESTREAM_S3_BUCKET || process.env.S3_BUCKET;
+    if (bucket) {
+      console.info(`[NovaService] Proof backed up to S3 bucket ${bucket}: ${proofKey}`);
+    } else {
+      console.info(`[NovaService] Proof backed up locally: ${backupFile}`);
     }
   }
 
@@ -144,7 +162,9 @@ export class NovaAggregatorService {
       }
 
       const proofRaw = fs.readFileSync(outputPath, "utf8");
-      return JSON.parse(proofRaw) as TallyProofPayload;
+      const tallyPayload = JSON.parse(proofRaw) as TallyProofPayload;
+      await this.backupProofToS3(`tally_${doId}_${proposalId}_${timestamp}`, tallyPayload);
+      return tallyPayload;
     } finally {
       if (fs.existsSync(batchPath)) fs.unlinkSync(batchPath);
       if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);

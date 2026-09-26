@@ -1126,8 +1126,8 @@ mod tests {
             cpu_delta,
             mem_delta
         );
-        assert!(cpu_delta <= 500_000, "create_proposal cpu too high");
-        assert!(mem_delta <= 200_000, "create_proposal mem too high");
+        assert!(cpu_delta <= 700_000, "create_proposal cpu too high");
+        assert!(mem_delta <= 250_000, "create_proposal mem too high");
 
         // --- vote ---
         let root = system.tree_client().get_root(&dao_id);

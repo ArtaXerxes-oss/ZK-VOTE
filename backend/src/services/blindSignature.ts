@@ -452,7 +452,7 @@ export async function getBlindSignaturePublicKey(): Promise<string> {
 }
 
 export async function issueBlindSignature(opts: { clientId: string; blindedValue: string }): Promise<string> {
-  const { clientId, blindedValue } = opts;
+  const { clientId: _clientId, blindedValue } = opts;
   // Dummy: generate a key, sign the blinded value, return as hex
   const kp = generateIssuerKeyPair();
   const blinded = BigInt(blindedValue);

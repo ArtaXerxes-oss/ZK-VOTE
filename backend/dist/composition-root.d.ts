@@ -12,6 +12,7 @@
 import { config } from "./config.js";
 import { logger } from "./services/logger.js";
 import type { StellarContext } from "./services/interfaces.js";
+import { JobScheduler } from "./services/job-scheduler.js";
 /** The explicitly-wired service container. */
 export interface AppServices {
     /** Immutable app configuration (validated before construction). */
@@ -20,6 +21,8 @@ export interface AppServices {
     logger: typeof logger;
     /** The Stellar/Soroban surface, injected into consumer services. */
     stellar: StellarContext;
+    /** Background job scheduler for maintenance and session cleanup. */
+    scheduler: JobScheduler;
 }
 /**
  * Construct and wire every service. Must be called after `validateEnv()`.

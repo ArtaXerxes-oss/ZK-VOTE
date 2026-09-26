@@ -1,16 +1,16 @@
 #![no_std]
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
-    Bytes, BytesN, Env, String, Symbol, Vec,
+    Bytes, BytesN, Env, String, Symbol, Vec, U256,
 };
 
-use zkvote_groth16::{verify, VerificationKey};
+use zkvote_groth16::{verify_groth16, Proof, VerificationKey};
 
 const VERSION: u32 = 1;
 const VERSION_KEY: Symbol = symbol_short!("ver");
 const GOVERNANCE: Symbol = symbol_short!("gov");
 const ADMINS: Symbol = symbol_short!("admins");
-const VK_PROPOSAL_COUNTER: Symbol = symbol_short!("vk_prop_cnt");
+const VK_PROPOSAL_COUNTER: Symbol = symbol_short!("vk_pr_cnt");
 
 const INSTANCE_TTL_THRESHOLD: u32 = 120_960;
 const INSTANCE_TTL_EXTEND: u32 = 535_680;
@@ -284,12 +284,12 @@ impl CircuitRegistry {
     pub fn verify_tally_proof(
         env: Env,
         dao_id: u64,
-        proof: Bytes,
-        public_inputs: Vec<BytesN<32>>,
+        proof: Proof,
+        public_inputs: Vec<U256>,
     ) -> bool {
         let circuit_id = Self::get_dao_current_circuit(env.clone(), dao_id, CircuitType::Tally);
         let vk_map = Self::get_vk(env.clone(), circuit_id, CircuitType::Tally);
-        verify(&env, &vk_map.vk, &proof, &public_inputs)
+        verify_groth16(&env, &vk_map.vk, &proof, &public_inputs)
     }
 
     pub fn migrate_dao(
@@ -493,7 +493,9 @@ impl CircuitRegistry {
 
         if let Some(did) = dao_id {
             let dao_proposal_key = DataKey::DaoVkProposal(did);
-            env.storage().persistent().set(&dao_proposal_key, &proposal_id);
+            env.storage()
+                .persistent()
+                .set(&dao_proposal_key, &proposal_id);
             Self::bump_persistent(&env, &dao_proposal_key);
         }
 

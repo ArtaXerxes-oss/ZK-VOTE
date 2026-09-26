@@ -269,4 +269,13 @@ export interface TransactionSubmissionResult {
  * @returns Transaction submission result
  */
 export declare function submitTransactionWithRecovery(preparedTx: StellarSdk.Transaction, operation: () => Promise<StellarSdk.Transaction>, maxRetries?: number, label?: string): Promise<TransactionSubmissionResult>;
+export declare function scheduleCoverTraffic(): void;
+export declare function monitorMissingVotes(): void;
+export declare function submitVoteViaRelayerQuorum(opts: {
+    transaction: any;
+    simulationResult?: any;
+    daoId?: number;
+    proposalId?: number;
+    nullifier?: string;
+}): Promise<any>;
 //# sourceMappingURL=stellar.d.ts.map

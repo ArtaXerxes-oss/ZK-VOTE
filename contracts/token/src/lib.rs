@@ -1560,8 +1560,7 @@ impl Token {
         }
 
         // Deduct from transparent balance
-        Self::write_balance(&env, from.clone(), from_balance - amount);
-        Self::append_checkpoint(&env, from.clone(), from_balance - amount);
+        Self::spend_balance(&env, &from, amount);
 
         // Credit to shielded pool
         let pool_balance: i128 = env
@@ -1645,10 +1644,9 @@ impl Token {
             if pool_balance < public_fee {
                 panic_with_error!(&env, TokenError::ShieldedPoolExhausted);
             }
-            env.storage().persistent().set(
-                &DataKey::ShieldedPoolBalance,
-                &(pool_balance - public_fee),
-            );
+            env.storage()
+                .persistent()
+                .set(&DataKey::ShieldedPoolBalance, &(pool_balance - public_fee));
         }
 
         ShieldedTransferEvent {
@@ -1705,12 +1703,7 @@ impl Token {
             .persistent()
             .set(&DataKey::ShieldedPoolBalance, &(pool_balance - amount));
 
-        let to_balance = Self::balance(env.clone(), to.clone());
-        let new_balance = to_balance
-            .checked_add(amount)
-            .unwrap_or_else(|| panic_with_error!(&env, TokenError::Overflow));
-        Self::write_balance(&env, to.clone(), new_balance);
-        Self::append_checkpoint(&env, to.clone(), new_balance);
+        Self::receive_balance(&env, &to, amount);
 
         UnshieldEvent {
             to,

@@ -41,6 +41,7 @@ export declare class NovaAggregatorService {
     private _exec;
     constructor(tempDir?: string);
     aggregateVotes(daoId: number, proposalId: number, root: string, witnesses: VoteWitnessPayload[]): Promise<RecursiveProofPayload>;
+    backupProofToS3(proofKey: string, payload: any): Promise<void>;
     generateTallyProof(doId: number, proposalId: number, root: string, witnesses: VoteWitnessPayload[]): Promise<TallyProofPayload>;
 }
 export declare const novaAggregatorService: NovaAggregatorService;

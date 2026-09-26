@@ -2,7 +2,7 @@
 import { Router } from "express";
 import { log } from "../services/logger.js";
 import { getCircuitInfo, getDaoMigration, getDaoCurrentCircuit, getVK, getCurrentVersion, isStaleVersion, proposeVkUpgrade, approveVkUpgrade, executeVkUpgrade, cancelVkUpgrade, getVkProposal, getDaoVkProposal, } from "../services/circuit-registry.js";
-import { bodyLimit, queryLimiter } from "../middleware/index.js";
+import { authGuard, bodyLimit, queryLimiter } from "../middleware/index.js";
 const router = Router();
 // Existing: circuit status for DAO migration
 router.get("/circuits/:dao/:type/status", queryLimiter, (async (req, res) => {

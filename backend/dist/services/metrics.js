@@ -457,4 +457,56 @@ export function normalizeRoute(path) {
         .replace(/\/(dao|proposal|comment|events|bridge|circuits|ipfs)\/[^/]+/g, "/$1/:param")
         .replace(/\/(root|daos|ready|health|config|metrics|db)(\/|$)/g, "/$1$2");
 }
+// ============================================
+// ARCHIVAL METRICS (missing - stubbed for unblocked build)
+// ============================================
+export const archivalRunsTotal = new Counter({
+    name: "zkvote_archival_runs_total",
+    help: "Total archival runs",
+    labelNames: ["status"],
+    registers: [register],
+});
+export const archivalDuration = new Histogram({
+    name: "zkvote_archival_duration_seconds",
+    help: "Archival duration in seconds",
+    buckets: [0.1, 0.5, 1, 2, 5, 10],
+    registers: [register],
+});
+// ============================================
+// SECURITY, MULTI-TENANT & RECONCILIATION METRICS (#307 / Toxic Waste Audit)
+// ============================================
+export const unauthenticated_rejection_total = new Counter({
+    name: "zkvote_unauthenticated_rejection_total",
+    help: "Total requests rejected due to missing or invalid authentication credentials",
+    labelNames: ["endpoint", "reason"],
+    registers: [register],
+});
+export const cross_tenant_denial_total = new Counter({
+    name: "zkvote_cross_tenant_denial_total",
+    help: "Total access attempts denied due to cross-tenant or cross-DAO resource isolation policies",
+    labelNames: ["tenant_id", "target_resource", "reason"],
+    registers: [register],
+});
+export const reconciliation_mismatch_total = new Counter({
+    name: "zkvote_reconciliation_mismatch_total",
+    help: "Total reconciliation mismatches detected between SQLite state, relayer events, and on-chain Soroban ledger state",
+    labelNames: ["component", "mismatch_type"],
+    registers: [register],
+});
+export const rate_limit_store_size = new Gauge({
+    name: "zkvote_rate_limit_store_size",
+    help: "Current number of tracked rate-limiting client keys in memory",
+    registers: [register],
+});
+export const session_store_size = new Gauge({
+    name: "zkvote_session_store_size",
+    help: "Current number of active authenticated relay sessions stored in memory or db",
+    registers: [register],
+});
+export const batch_partial_failure_total = new Counter({
+    name: "zkvote_batch_partial_failure_total",
+    help: "Total partial failures encountered during batch operations (e.g. pay batch, vote batch)",
+    labelNames: ["batch_type", "reason"],
+    registers: [register],
+});
 //# sourceMappingURL=metrics.js.map
