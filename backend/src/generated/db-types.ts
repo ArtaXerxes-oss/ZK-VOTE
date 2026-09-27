@@ -94,7 +94,10 @@ export interface PartitionRegistry {
 }
 
 export interface PaymentJobs {
-  amount: Generated<number | bigint | string>;
+  // `number` removed: payment amounts are stored as SQLite INTEGER and can
+  // exceed Number.MAX_SAFE_INTEGER (2^53-1) in stroops, causing silent
+  // precision loss. Use bigint or string to read/write safely.
+  amount: Generated<bigint | string>;
   created_at: Generated<string | null>;
   id: string;
   ops: string;
