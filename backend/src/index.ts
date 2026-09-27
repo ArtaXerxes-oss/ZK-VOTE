@@ -8,7 +8,12 @@
  */
 
 import cluster from "node:cluster";
-import express, { type Express, type Request, type Response, type NextFunction } from "express";
+import express, {
+  type Express,
+  type Request,
+  type Response,
+  type NextFunction,
+} from "express";
 import cors from "cors";
 import helmet from "helmet";
 
@@ -20,6 +25,7 @@ import swaggerUi from "swagger-ui-express";
 import { ServiceSupervisor } from "./services/supervisor.js";
 import { closeDb } from "./services/db.js";
 import { buildOpenApiDocument } from "./openapi.js";
+import { priorityMiddleware } from "./priority/priorityMiddleware.js";
 
 import {
   startClusterMaster,
@@ -256,9 +262,13 @@ const noStore = (
 // Metrics middleware (before other middleware to capture all requests)
 app.use(metricsMiddleware);
 
+// Reserve vote capacity before global throttling or any route mount. The
+// classifier normalizes /, /api/v1, and /api/v2 so every public mount gets
+// the same vote-over-comment scheduling guarantee.
+app.use(priorityMiddleware());
+
 // Request-scoped degradation tracking (#204)
 app.use(degradationContext);
-
 
 const allowAllCors = !isProduction && allowedCorsOrigins.includes("*");
 
@@ -333,7 +343,10 @@ app.get("/csrf-token", (_req, res) => {
 // ============================================
 
 // Initialize routes that need dependencies
-initHealthRoutes(services.stellar.server, services.stellar.relayerKeypair.publicKey());
+initHealthRoutes(
+  services.stellar.server,
+  services.stellar.relayerKeypair.publicKey(),
+);
 initIndexerRoutes(triggerDaoMembershipSync);
 
 // Mount route handlers (metrics first, before CSRF/auth middleware)
