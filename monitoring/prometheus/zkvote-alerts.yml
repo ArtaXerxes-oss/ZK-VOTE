@@ -100,3 +100,33 @@ groups:
         annotations:
           summary: Batch partial failure rate elevated
           description: Elevated partial failures observed in multi-item batch execution.
+
+      # Issue #556 — alert when GET /health returns 503 (degraded state)
+      - alert: ZKVoteHealthEndpointDegraded
+        expr: zkvote_health_endpoint_status > 200
+        for: 2m
+        labels:
+          severity: critical
+          service: zkvote-relayer
+        annotations:
+          summary: "ZKVote /health is returning non-200 (degraded)"
+          description: >
+            GET /health has been returning HTTP {{ $value }} for at least 2 minutes.
+            This means one or more backend services (soroban_rpc, sqlite, indexer, etc.)
+            are in a degraded or unavailable state.  Check /health details and Grafana
+            panel 'Health Endpoint Status'.
+
+      # Issue #556 — alert when config drift is detected at startup
+      - alert: ZKVoteConfigDriftDetected
+        expr: sum(zkvote_config_drift_detected_total) > 0
+        for: 0m
+        labels:
+          severity: warning
+          service: zkvote-relayer
+        annotations:
+          summary: "ZKVote config drift detected at startup"
+          description: >
+            A URL or environment config value was hardcoded outside the canonical
+            frontend/src/config/env.ts.  This can cause silent network mismatches
+            between environments.  Run `npm run drift:check` in the frontend to
+            identify the offending file.

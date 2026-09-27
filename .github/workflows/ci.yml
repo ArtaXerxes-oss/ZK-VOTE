@@ -134,6 +134,34 @@ jobs:
           COMMENTS_CONTRACT_ID: 'CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC'
       - name: Check config schema and .env.example are in sync
         run: npm run config:generate && git diff --exit-code .env.example || (echo '::error::.env.example is out of sync! Run: npm run config:generate' && exit 1)
+      - name: Check security docs are not stale (issue #553)
+        # SECURITY.md and THREAT_MODEL.md must reference the current year and
+        # must contain the issue markers that prove they were refreshed with the
+        # latest fixes.  This is a lightweight textual gate — full regeneration
+        # is done manually; CI ensures the docs are not left behind on merges.
+        run: |
+          YEAR=$(date +%Y)
+          check_doc() {
+            local file="$1"
+            local marker="$2"
+            if [ ! -f "$file" ]; then
+              echo "::error::$file is missing"
+              exit 1
+            fi
+            if ! grep -q "$marker" "$file"; then
+              echo "::error::$file does not contain required marker: $marker"
+              echo "  Run: git pull && re-apply the security docs update from this PR."
+              exit 1
+            fi
+            echo "✓ $file contains '$marker'"
+          }
+          check_doc "../SECURITY.md" "Config Drift"
+          check_doc "../SECURITY.md" "Trailing"
+          check_doc "../THREAT_MODEL.md" "Config Drift as a Threat"
+          check_doc "../THREAT_MODEL.md" "VoteMode::Trailing Starvation"
+          check_doc "../FIX_REPORT.md" "#556"
+          echo "✅ Security docs staleness check passed."
+        working-directory: backend
       - name: Security audit
         run: npm run audit:check
       - name: Build verification

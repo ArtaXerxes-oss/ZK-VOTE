@@ -10,54 +10,79 @@ on:
 
 jobs:
   tlc-check:
-    name: TLC Model Checker
+    name: TLC Model Checker (required)
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: formal-model
+
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
-      
+
       - name: Download TLA+ tools
         run: |
           curl -sL -o tla2tools.jar \
             https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar
-      
+
       - name: Verify TLA+ files exist
         run: |
           if [ ! -f "ZKVote.tla" ]; then
-            echo "Error: ZKVote.tla not found"
+            echo "::error::ZKVote.tla not found"
             exit 1
           fi
           if [ ! -f "ZKVote.cfg" ]; then
-            echo "Error: ZKVote.cfg not found"
+            echo "::error::ZKVote.cfg not found"
             exit 1
           fi
-      
-      - name: Run TLC model checker (PR smoke check)
+          echo "TLA+ source files present."
+
+      # Issue #552 — required CI gate:
+      # Previously this step ran with `|| echo "…"` which suppressed exit codes,
+      # meaning TLC failures were silently ignored.  The suppression has been
+      # removed so a liveness violation (TrailingVoteEventuallyAccepted /
+      # VoteMode::Trailing starvation) or invariant violation causes the job to
+      # fail and blocks merge.
+      #
+      # FairSpec (defined in ZKVote.tla) adds WF_vars(Vote(…)) so TLC can
+      # check the PROPERTY TrailingLiveness from ZKVote.cfg.
+      #
+      # Model size (depth 20, 2 DAOs, 3 members, 2 proposals):
+      #   ~30 s, < 512 MB RAM on standard GitHub runners.
+      - name: Run TLC model checker — safety + liveness (required gate)
         run: |
-          java -cp tla2tools.jar tlc2.TLC \
+          java -Xmx512m -cp tla2tools.jar tlc2.TLC \
             ZKVote.tla \
             -config ZKVote.cfg \
             -depth 20 \
             -workers auto \
-            -cleanup \
-            || echo "TLC check completed with warnings"
-      
-      - name: Display TLC output summary
+            2>&1 | tee tlc-output.txt
+          # Propagate TLC's exit code so CI fails on any violation.
+          exit ${PIPESTATUS[0]}
+
+      - name: Assert no violations in TLC output
         if: always()
         run: |
-          echo "TLC Model Check Summary:"
-          echo "- Configuration: ZKVote.cfg"
-          echo "- Depth: 20"
-          echo "- Status: Check logs above for results"
-  
+          if grep -qE "Error:|Invariant|is violated|is not satisfied" tlc-output.txt; then
+            echo "::error::TLC reported a violation — see tlc-output.txt"
+            cat tlc-output.txt
+            exit 1
+          fi
+          echo "TLC: no violations detected."
+
+      - name: Upload TLC output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tlc-output
+          path: formal-model/tlc-output.txt
+          retention-days: 7
+
   apalache-typecheck:
     name: Apalache Type Check
     runs-on: ubuntu-latest
@@ -65,23 +90,19 @@ jobs:
     defaults:
       run:
         working-directory: formal-model
+
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Setup Apalache (via Docker)
         run: |
           docker pull ghcr.io/apalache-mc/apalache:latest
-      
+
+      # Type-check only (not full model check) so this stays fast on PRs.
+      # A full Apalache symbolic check runs nightly via a separate workflow.
       - name: Run Apalache type check
         run: |
           docker run --rm -v "$(pwd):/data" \
             ghcr.io/apalache-mc/apalache:latest \
-            typecheck /data/ZKVote.tla \
-            || echo "Apalache typecheck completed with warnings"
-      
-      - name: Display Apalache summary
-        if: always()
-        run: |
-          echo "Apalache Type Check Summary:"
-          echo "- Model: ZKVote.tla"
-          echo "- Status: Check logs above for results"
+            typecheck /data/ZKVote.tla
+          # Exit code from Docker is propagated — type errors fail CI.

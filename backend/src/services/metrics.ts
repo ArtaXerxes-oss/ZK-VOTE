@@ -639,3 +639,31 @@ export const daoReconciliationLastOk = new Gauge({
   registers: [register],
 });
 
+
+// ============================================
+// CONFIG DRIFT & HEALTH METRICS (#556)
+// ============================================
+
+/**
+ * Incremented once at startup if any known config drift pattern is detected
+ * (e.g. a URL imported outside the canonical config/env.ts).  A non-zero
+ * value should trigger a Grafana alert so the operator corrects the drift
+ * before it causes a silent network mismatch in production.
+ */
+export const configDriftDetected = new Counter({
+  name: "zkvote_config_drift_detected_total",
+  help: "Number of config drift violations detected at startup (URL or env mismatch)",
+  labelNames: ["drift_type"] as const,
+  registers: [register],
+});
+
+/**
+ * Current HTTP status code last returned by /health.
+ * 200 = healthy, 503 = degraded.  Grafana alert: value > 200.
+ */
+export const healthEndpointStatus = new Gauge({
+  name: "zkvote_health_endpoint_status",
+  help: "Last HTTP status code returned by GET /health (200=ok, 503=degraded)",
+  registers: [register],
+});
+

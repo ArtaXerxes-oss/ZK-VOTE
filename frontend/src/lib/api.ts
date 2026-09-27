@@ -5,8 +5,10 @@ import type {
   ContentType,
   KeyEpoch,
 } from "./groupEncryption";
+// Issue #556 — single config source: RELAYER_URL is now the canonical export
+// from config/env.ts so all three service URLs stay in one place.
+import { RELAYER_URL } from "../config/env";
 
-const RELAYER_URL = import.meta.env.VITE_RELAYER_URL || "http://localhost:3001";
 const RELAYER_AUTH_TOKEN = import.meta.env.VITE_RELAYER_AUTH_TOKEN || "";
 
 // ============================================

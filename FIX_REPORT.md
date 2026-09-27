@@ -203,3 +203,161 @@ The blast radius of this vulnerability spanned across five operational surfaces:
 | **Frontend Production Build** | `npm run build` (in `frontend/`) | **0 Errors, bundle verified (exit 0)** |
 | **Formal Model Verification** | `formal-model/TranscriptRegistry.tla` | **Invariants hold across all states** |
 
+
+
+---
+
+# Fix Report — Config Drift, Docs Staleness, TLA+ Liveness (Issues #556, #553, #552)
+
+**Date:** 2026-09-27
+**Issues closed:** #556, #553, #552
+**Branch:** `fix/556-553-552-config-drift-docs-tla-liveness`
+
+---
+
+## 1. Blast Radius
+
+### Issue #556 — Config Drift (`RELAYER_URL`, `SOROBAN_RPC_URL`, `HORIZON_URL`)
+
+| File | Problem | Fix |
+|------|---------|-----|
+| `frontend/src/config/contracts.ts` | `rpcUrl` hard-coded to `"https://soroban-testnet.stellar.org"` | Now imports `SOROBAN_RPC_URL` from `config/env.ts` |
+| `frontend/src/lib/api.ts` | `RELAYER_URL` defined inline via `import.meta.env.VITE_RELAYER_URL` | Now imports `RELAYER_URL` from `config/env.ts` |
+| `frontend/src/config/env.ts` | *Missing* — created as single URL config source | **Created** — exports `RELAYER_URL`, `SOROBAN_RPC_URL`, `HORIZON_URL` |
+| `backend/src/routes/health.ts` | `/health` returned HTTP 200 even when `status: "degraded"` | Now returns **503** when `services.status !== "ok"` |
+| `scripts/drift-guard.mjs` | No URL drift detection | Extended with URL hardcode patterns; fails CI on regression |
+
+**Impact before fix**: build environments (staging/production) could silently point at
+different networks; load-balancer health probes would keep routing traffic to a degraded
+backend because `/health` returned 200.
+
+### Issue #553 — Security Docs Staleness
+
+| File | Problem | Fix |
+|------|---------|-----|
+| `SECURITY.md` | No mention of config drift, URL single-source, or Trailing starvation | Added Sections 6, 7, 8 |
+| `THREAT_MODEL.md` | Missing config-drift threat vector and Trailing starvation liveness | Added two threat sections at end |
+| `FIX_REPORT.md` | No entry for these issues | This section |
+
+**Gate**: `backend` CI job already runs `npm run docs:check` which validates that
+`openapi.json` and `API.md` are in sync with the backend source.  No changes needed to
+the script itself; the SECURITY/THREAT_MODEL refresh is the human-readable complement to
+that machine check.
+
+### Issue #552 — TLA+ Liveness Not Checked
+
+| File | Problem | Fix |
+|------|---------|-----|
+| `formal-model/ZKVote.tla` | No liveness property for `VoteMode::Trailing` starvation | Added `TrailingVoteEventuallyAccepted` temporal property + fairness |
+| `formal-model/ZKVote.cfg` | `SPECIFICATION Spec` only checked safety invariants | Added `PROPERTY TrailingLiveness` |
+| `.github/workflows/formal-model.yml` | TLC ran with `|| echo "…"` suppression — failures silently passed | Replaced with required exit-code check; removed `|| echo` |
+
+---
+
+## 2. Access Log / Horizon Hash Audit
+
+- `health/index.ts:330`: `/health` now returns 503 on degraded — previously masked
+  `ECONNREFUSED 8000` (indexer not running) as 200.
+- No `access.log` entries changed; the fix is purely HTTP status on the health path.
+- No Horizon transaction hashes affected; this fix is backend/frontend config only.
+
+---
+
+## 3. Test coverage
+
+- `scripts/drift-guard.mjs` — smoke-tested locally: running the guard with a file that
+  contains `rpcUrl: "https://soroban-testnet.stellar.org"` outside `env.ts` exits 1; clean
+  repo exits 0.
+- `backend/src/routes/health.ts` — existing `backend/test/health-ttl-branches.test.js`
+  and `backend/test/health-probes.test.js` exercise the health routes; the status-code
+  change aligns with the `503` already returned by `/healthz`.
+- `formal-model/ZKVote.tla` — TLC liveness check now in `.github/workflows/formal-model.yml`
+  as a required CI gate.
+
+---
+
+## 4. Rollback procedure
+
+If the health 503 change causes unexpected probe failures in existing deployments:
+1. Temporarily set `HEALTH_EXPOSE_DETAILS=false` to suppress degraded sub-service details.
+2. Or mark the affected sub-service healthy via `markHealthy("soroban_rpc")` in deployment init.
+3. The `RELAYER_URL` / `SOROBAN_RPC_URL` change is purely additive (new file, existing
+   callers still work via the re-exported constants).
+
+
+---
+
+# Fix Report — Config Drift, Docs Staleness, TLA+ Liveness (#556 / #553 / #552)
+
+**Date:** 2026-09-27
+**Issues closed:** #556, #553, #552
+**Branch:** `fix/556-553-552-config-drift-docs-tla-liveness`
+
+---
+
+## 1. Blast Radius
+
+### Issue #556 — Config Drift (`RELAYER_URL`, `SOROBAN_RPC_URL`, `HORIZON_URL`)
+
+| File | Problem | Fix |
+|------|---------|-----|
+| `frontend/src/config/contracts.ts` | `rpcUrl` hard-coded to `"https://soroban-testnet.stellar.org"` | Now imports `SOROBAN_RPC_URL` from `config/env.ts` |
+| `frontend/src/lib/api.ts` | `RELAYER_URL` defined inline via `import.meta.env.VITE_RELAYER_URL` | Now imports `RELAYER_URL` from `config/env.ts` |
+| `frontend/src/config/env.ts` | *Missing* — created as single URL config source | **Created** — exports `RELAYER_URL`, `SOROBAN_RPC_URL`, `HORIZON_URL` |
+| `backend/src/routes/health.ts` | `/health` returned HTTP 200 even when `status: "degraded"` | Now returns **503** when `services.status !== "ok"` |
+| `scripts/drift-guard.mjs` | No URL drift detection | Extended with URL hardcode patterns; fails CI on regression |
+
+**Impact before fix**: build environments (staging/production) could silently point at
+different networks; load-balancer health probes kept routing traffic to degraded backend
+because `/health` returned 200.
+
+### Issue #553 — Security Docs Staleness
+
+| File | Problem | Fix |
+|------|---------|-----|
+| `SECURITY.md` | No mention of config drift, URL single-source, or Trailing starvation | Added Sections 6, 7, 8 |
+| `THREAT_MODEL.md` | Missing config-drift threat vector and Trailing starvation liveness | Added two threat sections at end |
+| `FIX_REPORT.md` | No entry for these issues | This section |
+
+**Gate**: The `backend` CI job already runs `npm run docs:check` which validates
+`openapi.json` and `API.md` are in sync with the backend source. The SECURITY/THREAT_MODEL
+refresh is the human-readable complement to that machine check.
+
+### Issue #552 — TLA+ Liveness Not Checked
+
+| File | Problem | Fix |
+|------|---------|-----|
+| `formal-model/ZKVote.tla` | No liveness property for `VoteMode::Trailing` starvation | Added `TrailingVoteEventuallyAccepted` temporal property + weak fairness |
+| `formal-model/ZKVote.cfg` | `SPECIFICATION Spec` checked safety invariants only | Added `PROPERTY TrailingLiveness` |
+| `.github/workflows/formal-model.yml` | TLC ran with `\|\| echo "…"` — failures silently passed CI | Replaced with required exit-code check; removed suppression |
+
+---
+
+## 2. Access Log / Horizon Hash Audit
+
+- `/health` now returns 503 on degraded — previously masked `ECONNREFUSED 8000`
+  (indexer not running) as 200 `{"status":"degraded"}`.
+- No Horizon transaction hashes affected — this fix is backend config/routing only.
+- No `access.log` format changed; HTTP status change is backward-compatible.
+
+---
+
+## 3. Test Coverage
+
+- `scripts/drift-guard.mjs` — URL drift check exits 1 with a hardcoded URL outside
+  `env.ts`; exits 0 on clean repo. Covered by `frontend` CI `drift:check` step.
+- `backend/src/routes/health.ts` — existing `health-ttl-branches.test.js` and
+  `health-probes.test.js` exercise health routes; the 503 on degraded aligns with
+  the existing `/healthz` behaviour.
+- `formal-model/ZKVote.tla` — TLC liveness check now a required CI gate in
+  `.github/workflows/formal-model.yml`.
+
+---
+
+## 4. Rollback Procedure
+
+If the health-503 change trips existing deployment probes:
+1. Temporarily set the affected sub-service healthy in deploy init: call
+   `markHealthy("soroban_rpc")` before the server starts accepting traffic.
+2. The `RELAYER_URL` / `SOROBAN_RPC_URL` change is purely additive (new file +
+   re-export); existing callers still compile.

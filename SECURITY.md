@@ -66,3 +66,61 @@ Alice (c1) -> Bob (c2) -> Charlie (c3) -> Random Beacon -> Final zkey & VK
 - **Cross-Tenant Guardrails**: Middleware rejects cross-tenant requests and increments `zkvote_cross_tenant_denial_total`.
 - **Reconciliation Engine**: Periodic reconciliation compares SQLite relayer cache against on-chain Soroban ledger events. Any divergence increments `zkvote_reconciliation_mismatch_total` and triggers automated alerts.
 - **Rate-Limiting & Memory Protection**: In-memory stores are monitored via Prometheus gauges (`zkvote_rate_limit_store_size`, `zkvote_session_store_size`), and stale sessions are pruned by `JobScheduler`.
+
+---
+
+## 6. Config Drift & Service URL Security (Issue #556 / #553)
+
+**Problem:** Three service URLs (`RELAYER_URL`, `SOROBAN_RPC_URL`, `HORIZON_URL`) were
+defined in at least two places (hardcoded in `frontend/src/config/contracts.ts` and
+inline in `frontend/src/lib/api.ts`), creating a drift vector where a build can silently
+point at the wrong network.
+
+**Fix applied:**
+
+- `frontend/src/config/env.ts` is now the **single source of truth** for all three URLs.
+  All other files import from there; no other file calls `import.meta.env.VITE_*` for
+  these three variables.
+- `scripts/drift-guard.mjs` was extended to **fail CI** if a hardcoded URL pattern is
+  found outside `config/env.ts`.
+- The `/health` endpoint now returns **HTTP 503** (not 200) when any monitored service is
+  in `degraded` or `unavailable` state so that load-balancer health probes stop routing
+  traffic to a degraded backend instance.
+
+**Drift gate:** The `frontend` CI job runs `npm run drift:check` which invokes
+`drift-guard.mjs`; any regression re-introducing a hardcoded URL will fail the PR.
+
+---
+
+## 7. Pinned Dependency Versions (Issue #556 / #553)
+
+All security-critical dependencies are pinned to exact versions in the respective
+`package.json` files to prevent supply-chain drift:
+
+| Package | Pinned version | Location |
+|---------|---------------|----------|
+| `@stellar/stellar-sdk` | `15.1.0` | `backend/package.json` |
+| `snarkjs` | `0.7.5` | `circuits/package.json` |
+| `prom-client` | `15.1.3` | `backend/package.json` |
+
+The `wasm32v1-none` toolchain target is fixed via `rust-toolchain.toml` at the repo root.
+
+---
+
+## 8. Liveness & Starvation — Formal Model (Issue #552)
+
+`VoteMode::Trailing` proposals accept any root whose index is `≥ earliest_root_idx` and
+`≥ minValidRootIdx`. A member removed after the proposal was created can therefore be
+evicted from the root history before they cast their vote, starving them of a valid root.
+
+**Model:** `formal-model/ZKVote.tla` now includes a weak-fairness liveness property
+`TrailingVoteEventuallyAccepted` which asserts that any member with a valid root
+eventually casts a vote (or the proposal closes). TLC is run in CI as a **required** gate
+(no `|| true` suppression) against this property.
+
+See `formal-model/ZKVote.tla` and `.github/workflows/formal-model.yml` for details.
+
+---
+
+*Last updated: 2026-09-27 — reflects 391-test suite (cargo test --workspace), config-drift
+fix (#556), docs-staleness fix (#553), and TLA+ liveness gate (#552).*

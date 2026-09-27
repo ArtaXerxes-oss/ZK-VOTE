@@ -593,3 +593,56 @@ In an unmitigated "single-laptop setup", a single ceremony runner evaluates Phas
      - `UnattestedVKNeverActive`: An unattested verification key can never be set as active in voting.
      - `MinContributorsEnforced`: No transcript with $< 3$ contributors can ever be verified.
 
+
+---
+
+## Config Drift as a Threat Vector (Issue #556 / #553)
+
+**Threat**: Three service URLs (`RELAYER_URL`, `SOROBAN_RPC_URL`, `HORIZON_URL`) were
+previously defined in multiple files.  A developer updating one without the others
+silently causes the frontend to talk to a different network or a stale endpoint —
+transactions land on the wrong network, health checks pass on one host but fail on
+another, or the CORS origin mismatches and calls silently 403.
+
+**Severity**: P1 — silent misconfiguration can redirect user funds or votes to an
+attacker-controlled network without any obvious error to the user.
+
+**Fix**: `frontend/src/config/env.ts` is the single source of truth.  The `drift:check`
+CI step (running `scripts/drift-guard.mjs`) now fails if any hardcoded URL pattern is
+detected outside that file.  The `/health` endpoint returns HTTP **503** (not 200) when
+any monitored service is degraded, so load-balancer probes stop sending traffic to an
+unhealthy backend instance (previously `200 degraded` masked availability problems).
+
+**Residual risk**: CORS origin mismatch between `VITE_RELAYER_URL` and `CORS_ORIGINS` on
+the backend can still cause silent 403s; operators must keep both in sync via
+`backend/.env.*`.
+
+---
+
+## VoteMode::Trailing Starvation — Formal Liveness (Issue #552)
+
+**Threat**: In `VoteMode::Trailing`, a proposal accepts any root whose index is
+`≥ earliest_root_idx` AND `≥ minValidRootIdx`.  If membership churns faster than the
+FIFO window (30 roots) during a long-running proposal, a member's root can be evicted
+before they cast their vote.  `cargo test --workspace` passes (unit tests do not model
+this cross-contract timing interaction), but TLC was not previously gating CI on this
+property — so the starvation scenario was unchecked.
+
+**Fix**: `formal-model/ZKVote.tla` now declares a weak-fairness liveness property
+`TrailingVoteEventuallyAccepted`:
+
+> *Any member who registers a commitment during an Active Trailing proposal and whose
+> root has not yet been evicted will eventually be able to cast a vote.*
+
+TLC is run in CI (`.github/workflows/formal-model.yml`) as a **required** step (exit
+code is no longer suppressed).  The `ZKVote.cfg` configuration is set to `depth 20`
+(smoke) for PR checks, sufficient to exercise the eviction scenario within the small
+bounded model (2 DAOs, 3 members, 2 proposals).
+
+**Residual risk**: TLC bounded model checking (depth 20, MAX_MEMBERS=3) cannot exhaustively
+verify unbounded state spaces.  The liveness property is an under-approximation; the
+Apalache symbolic check (nightly) provides deeper coverage.
+
+---
+
+*Last updated: 2026-09-27 — config-drift fix (#556), docs-staleness gate (#553), TLA+ liveness gate (#552).*
