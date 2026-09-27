@@ -70,18 +70,17 @@ export function validateQuery<T>(schema: ZodType<T, any, any>) {
       });
     }
 
-    // Replace query with validated/transformed data
-    // Express 5 makes req.query getter-only; use defineProperty to avoid "only a getter" error
-    try {
-      (req as any).query = result.data;
-    } catch {
-      Object.defineProperty(req, "query", {
-        value: result.data,
-        writable: true,
-        configurable: true,
-        enumerable: true,
-      });
-    }
+    // Replace query with validated/transformed data.
+    // Express 5 makes req.query a getter-only property on the prototype, so a
+    // plain assignment silently no-ops in sloppy mode and never reaches the
+    // catch block — req.query stays unmodified. Always use defineProperty so
+    // the validated data is visible on both req.query and req.validatedQuery.
+    Object.defineProperty(req, "query", {
+      value: result.data,
+      writable: true,
+      configurable: true,
+      enumerable: true,
+    });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (req as any).validatedQuery = result.data;
     next();
