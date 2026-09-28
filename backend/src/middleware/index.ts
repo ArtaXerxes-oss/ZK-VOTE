@@ -39,6 +39,9 @@ export {
   claimLimiter,
   createPerMemberLimiter,
   commitmentRegistrationLimiter,
+  costBasedLimiter,
+  paymentBatchCostLimiter,
+  wsConnectionLimiter,
 } from "./rateLimit.js";
 export { validateBody, validateQuery, validateParams } from "./validate.js";
 export {
