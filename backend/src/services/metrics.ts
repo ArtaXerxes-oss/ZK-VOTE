@@ -651,6 +651,24 @@ export const batch_partial_failure_total = new Counter({
 });
 
 // ============================================
+// COST-BASED RATE LIMITING METRICS (#525)
+// ============================================
+
+export const paymentOpsPerMinute = new Histogram({
+  name: "zkvote_payment_ops_per_minute",
+  help: "Histogram of payment operations per minute per IP",
+  buckets: [1, 5, 10, 25, 50, 100],
+  registers: [register],
+});
+
+export const costRateLimitExceeded = new Counter({
+  name: "zkvote_cost_rate_limit_exceeded_total",
+  help: "Total cost-based rate limit violations",
+  labelNames: ["limiter", "cost"] as const,
+  registers: [register],
+});
+
+// ============================================
 // DAO END-TO-END RECONCILIATION METRICS (#577)
 // ============================================
 

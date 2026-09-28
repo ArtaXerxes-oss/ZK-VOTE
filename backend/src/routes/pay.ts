@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { Router } from "express";
 import { sendPayment, sendBatch } from "../services/payments.js";
-import { bodyLimit, queryLimiter, csrfOriginGuard } from "../middleware/index.js";
+import { bodyLimit, queryLimiter, csrfOriginGuard, paymentBatchCostLimiter } from "../middleware/index.js";
 import { log } from "../services/logger.js";
 
 console.error("PAY ROUTES LOADED", new Date().toISOString());
@@ -23,12 +23,23 @@ router.post("/pay", csrfOriginGuard, bodyLimit("5kb"), async (req, res) => {
   }
 });
 
-import { batch_partial_failure_total } from "../services/metrics.js";
+import { batch_partial_failure_total, paymentOpsPerMinute } from "../services/metrics.js";
 
-router.post("/pay/batch", csrfOriginGuard, bodyLimit("256kb"), async (req, res) => {
+router.post("/pay/batch", csrfOriginGuard, bodyLimit("256kb"), paymentBatchCostLimiter, async (req, res) => {
   try {
     const { ops } = req.body;
     if (!Array.isArray(ops)) return res.status(400).json({ error: "ops array required" });
+    
+    // Record ops per minute metric
+    paymentOpsPerMinute.observe(ops.length);
+    
+    // Apply cost-based rate limiting
+    const costFn = (req as any).rateLimit?.cost;
+    if (costFn && costFn(ops.length)) {
+      // Already sent 429 response
+      return;
+    }
+    
     const r = await sendBatch(ops);
     res.json(r);
   } catch (e: any) {
