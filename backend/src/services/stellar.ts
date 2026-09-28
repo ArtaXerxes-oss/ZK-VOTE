@@ -397,6 +397,45 @@ export async function withSequenceLock<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
+/**
+ * Split-phase sequence lock: acquire for operations that modify sequence,
+ * then release before blocking on confirmation. Prevents unbounded waiters (#656).
+ * Caller acquires lock, performs submit within critical section, then calls
+ * releaseLockForConfirmation before waitForTransaction.
+ */
+let currentLockRelease: (() => void) | null = null;
+
+export async function acquireSequenceLockForSubmit(): Promise<void> {
+  if (config.clusterEnabled && nodeCluster.isWorker) {
+    await acquireClusterSequenceLock();
+    currentLockRelease = () => {
+      releaseClusterSequenceLock().catch((err) => {
+        log("warn", "cluster_lock_release_failed", { error: (err as Error).message });
+      });
+    };
+    return;
+  }
+
+  const previous = sequenceLock;
+  let resolve: () => void;
+  sequenceLock = new Promise<void>((r) => {
+    resolve = r;
+  });
+  inFlightLockOps++;
+  await previous;
+  currentLockRelease = () => {
+    resolve!();
+    inFlightLockOps--;
+  };
+}
+
+export function releaseLockForConfirmation(): void {
+  if (currentLockRelease) {
+    currentLockRelease();
+    currentLockRelease = null;
+  }
+}
+
 // ============================================
 // SOROBAN RPC CONNECTION POOL & CLIENT
 // ============================================
