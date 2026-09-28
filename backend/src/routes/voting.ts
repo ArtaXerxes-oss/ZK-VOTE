@@ -23,6 +23,8 @@ import {
   simulateWithBackoff,
   waitForTransaction,
   withSequenceLock,
+  acquireSequenceLockForSubmit,
+  releaseLockForConfirmation,
   sequenceManager,
   submitVoteViaRelayerQuorum,
   scheduleCoverTraffic,
@@ -248,7 +250,11 @@ async function executeQueuedVoteJob(payload: VoteQueuedPayload): Promise<{
   ];
   const operation = contract.call("vote", ...args);
 
-  const { sendResult, result } = await withSequenceLock(async () => {
+  // Acquire lock only for sequence-sensitive operations (build & submit),
+  // then release before blocking on confirmation (#656)
+  await acquireSequenceLockForSubmit();
+  let sendResult: any;
+  try {
     const account = await (server as StellarSdk.rpc.Server).getAccount(
       relayerKeypair.publicKey(),
     );
@@ -276,16 +282,16 @@ async function executeQueuedVoteJob(payload: VoteQueuedPayload): Promise<{
       .assembleTransaction(tx, simResult)
       .build();
     preparedTx.sign(relayerKeypair as StellarSdk.Keypair);
-    const sr = await callWithTimeout(
+    sendResult = await callWithTimeout(
       () => (server as StellarSdk.rpc.Server).sendTransaction(preparedTx),
       "send_vote",
     );
 
-    if (sr.status === "ERROR") {
+    if (sendResult.status === "ERROR") {
       const isBadSeq = sequenceManager.handleTxError(
-        typeof (sr as any).errorResult === "string"
-          ? (sr as any).errorResult
-          : JSON.stringify((sr as any).errorResult ?? ""),
+        typeof (sendResult as any).errorResult === "string"
+          ? (sendResult as any).errorResult
+          : JSON.stringify((sendResult as any).errorResult ?? ""),
       );
       if (nullifier) {
         updateTransactionLogStatus(nullifier, "FAILED");
@@ -294,17 +300,18 @@ async function executeQueuedVoteJob(payload: VoteQueuedPayload): Promise<{
       throw new Error(isBadSeq ? "SUBMIT_FAILED_BAD_SEQ" : "SUBMIT_FAILED");
     }
 
-    if (nullifier && sr.hash) {
-      recordTransactionLog(nullifier, sr.hash, "PENDING");
+    if (nullifier && sendResult.hash) {
+      recordTransactionLog(nullifier, sendResult.hash, "PENDING");
     }
+  } finally {
+    releaseLockForConfirmation();
+  }
 
-    const r = await callWithTimeout(
-      () => waitForTransaction(sr.hash),
-      "wait_for_vote",
-    );
-
-    return { sendResult: sr, result: r };
-  });
+  // Confirmation happens without lock held, allowing other requests to progress
+  const result = await callWithTimeout(
+    () => waitForTransaction(sendResult.hash),
+    "wait_for_vote",
+  );
 
   if (result.status === "SUCCESS") {
     if (nullifier && sendResult.hash) {
