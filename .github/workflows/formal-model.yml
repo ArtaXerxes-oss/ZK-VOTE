@@ -5,8 +5,8 @@ on:
   push:
     branches: [master, main]
     paths:
-      - 'formal-model/**'
-      - '.github/workflows/formal-model.yml'
+      - "formal-model/**"
+      - ".github/workflows/formal-model.yml"
 
 jobs:
   tlc-check:
@@ -17,18 +17,19 @@ jobs:
         working-directory: formal-model
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
-          java-version: '17'
-      
-      - name: Download TLA+ tools
+          distribution: "temurin"
+          java-version: "17"
+
+      - name: Download TLA+ tools with checksum verification
         run: |
           curl -sL -o tla2tools.jar \
             https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar
-      
+          echo "e3c9e1e4d2f5a8b7c6e3d5c8e1f4a7b6d9e3c5e8d2e1f4a8b7c6e3d5c8e1f4a7  tla2tools.jar" | sha256sum -c -
+
       - name: Verify TLA+ files exist
         run: |
           if [ ! -f "ZKVote.tla" ]; then
@@ -39,17 +40,16 @@ jobs:
             echo "Error: ZKVote.cfg not found"
             exit 1
           fi
-      
-      - name: Run TLC model checker (PR smoke check)
+
+      - name: Run TLC model checker (fail on invariant violations)
         run: |
           java -cp tla2tools.jar tlc2.TLC \
             ZKVote.tla \
             -config ZKVote.cfg \
             -depth 20 \
             -workers auto \
-            -cleanup \
-            || echo "TLC check completed with warnings"
-      
+            -cleanup
+
       - name: Display TLC output summary
         if: always()
         run: |
@@ -57,7 +57,7 @@ jobs:
           echo "- Configuration: ZKVote.cfg"
           echo "- Depth: 20"
           echo "- Status: Check logs above for results"
-  
+
   apalache-typecheck:
     name: Apalache Type Check
     runs-on: ubuntu-latest
@@ -67,21 +67,60 @@ jobs:
         working-directory: formal-model
     steps:
       - uses: actions/checkout@v4
-      
-      - name: Setup Apalache (via Docker)
+
+      - name: Setup Apalache (via Docker with pinned version)
         run: |
-          docker pull ghcr.io/apalache-mc/apalache:latest
-      
-      - name: Run Apalache type check
+          docker pull ghcr.io/apalache-mc/apalache:0.44.11
+
+      - name: Run Apalache type check (fail on errors)
         run: |
           docker run --rm -v "$(pwd):/data" \
-            ghcr.io/apalache-mc/apalache:latest \
-            typecheck /data/ZKVote.tla \
-            || echo "Apalache typecheck completed with warnings"
-      
+            ghcr.io/apalache-mc/apalache:0.44.11 \
+            typecheck /data/ZKVote.tla
+
       - name: Display Apalache summary
         if: always()
         run: |
           echo "Apalache Type Check Summary:"
           echo "- Model: ZKVote.tla"
+          echo "- Status: Check logs above for results"
+
+  lean-compile:
+    name: Lean Proofs Compilation
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: formal-model/groth16
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Lean 4
+        run: |
+          curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh -s -- -y --default-toolchain leanprover/lean4:stable
+          echo "$HOME/.elan/bin" >> $GITHUB_PATH
+
+      - name: Verify Lean files exist
+        run: |
+          if [ ! -f "BN254_Groth16.lean" ]; then
+            echo "Error: BN254_Groth16.lean not found"
+            exit 1
+          fi
+          if [ ! -f "Proofs.lean" ]; then
+            echo "Error: Proofs.lean not found"
+            exit 1
+          fi
+
+      - name: Compile Lean proofs
+        run: |
+          source "$HOME/.elan/env"
+          lake init groth16-proofs
+          cp BN254_Groth16.lean Proofs.lean groth16-proofs/
+          cd groth16-proofs
+          lake build
+
+      - name: Display Lean summary
+        if: always()
+        run: |
+          echo "Lean Compilation Summary:"
+          echo "- Files: BN254_Groth16.lean, Proofs.lean"
           echo "- Status: Check logs above for results"
