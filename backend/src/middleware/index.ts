@@ -4,7 +4,7 @@
  * Re-exports all middleware for convenient importing.
  */
 
-export { authGuard, extractAuthToken, masterKeyGuard } from "./auth.js";
+export { authGuard, anonymousGuard, extractAuthToken, masterKeyGuard } from "./auth.js";
 export { tlsClientCertGuard } from "./tlsAuth.js";
 export { csrfGuard, csrfTokenMiddleware } from "./csrf.js";
 export { csrfOriginGuard } from "./csrfOrigin.js";

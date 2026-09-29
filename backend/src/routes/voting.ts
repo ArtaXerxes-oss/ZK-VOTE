@@ -38,7 +38,7 @@ import {
   canonicalizeProof,
 } from "../services/stellar.js";
 import {
-  authGuard,
+  anonymousGuard,
   tlsClientCertGuard,
   voteLimiter,
   walletRateLimiter,
@@ -134,8 +134,6 @@ interface VoteQueuedPayload {
   proof: unknown;
   nonce?: string;
   timestamp?: number;
-  voterPublicKey?: string;
-  voterSignature?: string;
 }
 
 interface VoteQueueJob {
@@ -575,7 +573,7 @@ router.get("/relayer/pubkey", (_req: Request, res: Response) => {
 router.post(
   "/vote/commit",
   bodyLimit("5kb"),
-  authGuard,
+  anonymousGuard,
   tlsClientCertGuard,
   walletRateLimiter,
   validateBody(commitSchema),
@@ -586,7 +584,6 @@ router.post(
       nullifier,
       commitmentHash,
       timestamp,
-      walletAddress,
       proof,
     } = req.body;
 
@@ -616,19 +613,18 @@ router.post(
         .json({ error: "Proof commitment already revealed" });
     }
 
+    // Do not store client-supplied wallet addresses or plaintext nullifiers (#644)
     recordProofCommitment(
       commitmentHash,
       nullifier,
       daoId,
       proposalId,
       timestamp,
-      walletAddress,
     );
 
     log("info", "proof_committed", {
       daoId,
       proposalId,
-      nullifier,
       commitmentHash,
     });
 
@@ -646,7 +642,7 @@ router.post(
 router.post(
   "/vote",
   bodyLimit("5kb"),
-  authGuard,
+  anonymousGuard,
   tlsClientCertGuard,
   walletRateLimiter,
   voteLimiter,
@@ -674,8 +670,6 @@ router.post(
       redundantProof,
       nonce,
       timestamp,
-      voterPublicKey,
-      voterSignature,
     } = body;
 
     const idempotencyKey = req.header("Idempotency-Key") || nullifier;
@@ -683,92 +677,8 @@ router.post(
     try {
       log("info", "vote_request", { daoId, proposalId });
 
-      // Verify voter signature if provided
-      if (voterPublicKey && voterSignature) {
-        try {
-          const payloadToSign = JSON.stringify({
-            daoId,
-            proposalId,
-            choice,
-            nullifier,
-            root,
-            proof,
-            timestamp,
-          });
-          const payloadHash = StellarSdk.hash(
-            Buffer.from(payloadToSign, "utf8"),
-          );
-
-          // Re-build the same minimal ManageData transaction the frontend constructed
-          const account = new StellarSdk.Account(voterPublicKey, "0");
-          const tx = new StellarSdk.TransactionBuilder(account, {
-            fee: "100",
-            networkPassphrase: config.networkPassphrase,
-          })
-            .addOperation(
-              StellarSdk.Operation.manageData({
-                name: "vote_sig",
-                value: payloadHash.slice(0, 28),
-              }),
-            )
-            .setTimeout(0)
-            .build();
-
-          // Parse the signed XDR the frontend returned
-          const signedTx = new StellarSdk.Transaction(
-            voterSignature,
-            config.networkPassphrase,
-          );
-
-          // Verify the transaction hash matches what we expect
-          const expectedHash = tx.hash();
-          const actualHash = signedTx.hash();
-          if (!expectedHash.equals(actualHash)) {
-            log("warn", "voter_signature_tx_mismatch", {
-              voterPublicKey,
-              daoId,
-              proposalId,
-            });
-            return res
-              .status(400)
-              .json({ error: "Voter signature does not match vote payload" });
-          }
-
-          // Verify the ed25519 signature on the transaction hash
-          if (signedTx.signatures.length === 0) {
-            return res
-              .status(400)
-              .json({ error: "Voter signature is missing" });
-          }
-
-          const keypair = StellarSdk.Keypair.fromPublicKey(voterPublicKey);
-          const sig = signedTx.signatures[0].signature();
-          const isValid = keypair.verify(actualHash, sig);
-
-          if (!isValid) {
-            log("warn", "invalid_voter_signature", {
-              voterPublicKey,
-              daoId,
-              proposalId,
-            });
-            return res.status(400).json({ error: "Invalid voter signature" });
-          }
-
-          log("info", "voter_signature_verified", {
-            voterPublicKey,
-            daoId,
-            proposalId,
-          });
-        } catch (err) {
-          log("warn", "voter_signature_verification_failed", {
-            error: (err as Error).message,
-            voterPublicKey,
-          });
-          return res
-            .status(400)
-            .json({ error: "Voter signature verification failed" });
-        }
-      }
+      // Identity signatures (voterPublicKey / voterSignature) are intentionally
+      // not accepted — they deanonymize the ZK vote in transit (#644).
 
       await rejectOnRedundantProofMismatch({
         daoId,
@@ -1107,7 +1017,7 @@ router.get("/vote/status/:jobId", (req: Request, res: Response) => {
 router.post(
   "/vote/batch",
   bodyLimit("256kb"),
-  authGuard,
+  anonymousGuard,
   tlsClientCertGuard,
   walletRateLimiter,
   voteLimiter,
