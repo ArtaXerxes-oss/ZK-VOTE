@@ -492,7 +492,14 @@ const EXPECTED_SCHEMA: Record<string, ExpectedTable> = {
         notNull: true,
         primaryKey: true,
       },
+      // Plaintext nullifier retained as empty string for schema compat; hashed form is authoritative.
       { name: "nullifier", type: "TEXT", notNull: true, primaryKey: false },
+      {
+        name: "nullifier_hash",
+        type: "TEXT",
+        notNull: false,
+        primaryKey: false,
+      },
       { name: "dao_id", type: "INTEGER", notNull: true, primaryKey: false },
       {
         name: "proposal_id",
@@ -518,8 +525,10 @@ const EXPECTED_SCHEMA: Record<string, ExpectedTable> = {
       },
     ],
     indexes: [
-      { name: "idx_commitments_nullifier", columns: ["nullifier"] },
-      { name: "idx_commitments_wallet", columns: ["wallet_address"] },
+      {
+        name: "idx_commitments_nullifier_hash",
+        columns: ["nullifier_hash"],
+      },
       {
         name: "idx_proof_commitments_canonical",
         columns: ["canonical_proof_hash"],
@@ -1315,7 +1324,7 @@ export function initDb(dbPath?: string): DatabaseType {
     CREATE INDEX IF NOT EXISTS idx_auth_audit_created_at ON auth_token_audit(created_at);
     CREATE TABLE IF NOT EXISTS proof_commitments (
       commitment_hash TEXT PRIMARY KEY,
-      nullifier TEXT NOT NULL,
+      nullifier TEXT NOT NULL DEFAULT '',
       dao_id INTEGER NOT NULL,
       proposal_id INTEGER NOT NULL,
       wallet_address TEXT,
@@ -1324,9 +1333,6 @@ export function initDb(dbPath?: string): DatabaseType {
       created_at TEXT NOT NULL,
       canonical_proof_hash TEXT
     );
-
-    CREATE INDEX IF NOT EXISTS idx_commitments_nullifier ON proof_commitments(nullifier);
-    CREATE INDEX IF NOT EXISTS idx_commitments_wallet ON proof_commitments(wallet_address);
 
     CREATE TABLE IF NOT EXISTS proposal_lifecycle_subscriptions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3815,9 +3821,13 @@ function rowToAuditEntry(row: Record<string, unknown>): AuthTokenAuditEntry {
 
 export interface ProofCommitmentRecord {
   commitmentHash: string;
+  /** Always empty for new rows — retained for legacy reads only. */
   nullifier: string;
+  /** SHA-256 hex of the nullifier; used for lookups without storing plaintext. */
+  nullifierHash: string | null;
   daoId: number;
   proposalId: number;
+  /** Always null for new rows — wallet linkage removed (#644). */
   walletAddress?: string | null;
   timestamp: number;
   status: "COMMITTED" | "REVEALED" | "EXPIRED";
@@ -3826,33 +3836,40 @@ export interface ProofCommitmentRecord {
   canonicalProofHash: string | null;
 }
 
+function hashNullifier(nullifier: string): string {
+  return crypto.createHash("sha256").update(nullifier).digest("hex");
+}
+
 export function recordProofCommitment(
   commitmentHash: string,
   nullifier: string,
   daoId: number,
   proposalId: number,
   timestamp: number,
-  walletAddress?: string | null,
+  _walletAddress?: string | null,
   canonicalProofHash?: string | null,
 ): void {
   const database = getWriteDb();
   const createdAt = new Date().toISOString();
+  const nullifierHash = hashNullifier(nullifier);
   database
     .prepare(
       `INSERT INTO proof_commitments
-         (commitment_hash, nullifier, dao_id, proposal_id, wallet_address, timestamp, status, created_at, canonical_proof_hash)
-       VALUES (?, ?, ?, ?, ?, ?, 'COMMITTED', ?, ?)
+         (commitment_hash, nullifier, nullifier_hash, dao_id, proposal_id, wallet_address, timestamp, status, created_at, canonical_proof_hash)
+       VALUES (?, '', ?, ?, ?, NULL, ?, 'COMMITTED', ?, ?)
        ON CONFLICT(commitment_hash) DO UPDATE SET
          timestamp = excluded.timestamp,
          status = 'COMMITTED',
+         nullifier_hash = COALESCE(excluded.nullifier_hash, proof_commitments.nullifier_hash),
+         wallet_address = NULL,
+         nullifier = '',
          canonical_proof_hash = COALESCE(excluded.canonical_proof_hash, proof_commitments.canonical_proof_hash)`,
     )
     .run(
       commitmentHash,
-      nullifier,
+      nullifierHash,
       daoId,
       proposalId,
-      walletAddress || null,
       timestamp,
       createdAt,
       canonicalProofHash ?? null,
@@ -3871,10 +3888,11 @@ export function getProofCommitment(
 
   return {
     commitmentHash: row.commitment_hash as string,
-    nullifier: row.nullifier as string,
+    nullifier: (row.nullifier as string) || "",
+    nullifierHash: (row.nullifier_hash as string | null) ?? null,
     daoId: row.dao_id as number,
     proposalId: row.proposal_id as number,
-    walletAddress: row.wallet_address as string | null,
+    walletAddress: null,
     timestamp: row.timestamp as number,
     status: row.status as "COMMITTED" | "REVEALED" | "EXPIRED",
     createdAt: row.created_at as string,
@@ -3906,10 +3924,11 @@ export function getProofCommitmentByCanonicalHash(
 
   return {
     commitmentHash: row.commitment_hash as string,
-    nullifier: row.nullifier as string,
+    nullifier: (row.nullifier as string) || "",
+    nullifierHash: (row.nullifier_hash as string | null) ?? null,
     daoId: row.dao_id as number,
     proposalId: row.proposal_id as number,
-    walletAddress: row.wallet_address as string | null,
+    walletAddress: null,
     timestamp: row.timestamp as number,
     status: row.status as "COMMITTED" | "REVEALED" | "EXPIRED",
     createdAt: row.created_at as string,
