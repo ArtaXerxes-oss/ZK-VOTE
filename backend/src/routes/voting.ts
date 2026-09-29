@@ -1002,21 +1002,13 @@ router.post(
         return { sendResult: sr, result: r };
       });
 
-      try {
-        const { jobId, status } = enqueueQueuedVote(queuePayload);
-        res.status(202).json({
-          success: true,
-          jobId,
-          status,
-          message: "Vote accepted for async processing",
-        });
-        return;
-      } catch (err) {
-        if ((err as Error).message === "VOTE_QUEUE_FULL") {
-          return res.status(429).json({ error: "Vote queue is full" });
-        }
-        throw err;
-      }
+      return respondToVoteExecution(
+        res,
+        { sendResult, result },
+        nullifier,
+        daoId,
+        proposalId,
+      );
     } catch (err) {
       if (nullifier) {
         updateTransactionLogStatus(nullifier, "FAILED");

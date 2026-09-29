@@ -1225,5 +1225,15 @@ export function scheduleCoverTraffic(): void {
 
 export function monitorMissingVotes(): void {}
 export async function submitVoteViaRelayerQuorum(opts: { transaction: any; simulationResult?: any; daoId?: number; proposalId?: number; nullifier?: string }): Promise<any> {
-  return submitToRelayQuorum(opts.transaction);
+  if (!opts.simulationResult) {
+    throw new Error("simulationResult is required for transaction assembly");
+  }
+  // Assemble the transaction with simulation results (adds soroban auth, resource fees)
+  // then sign with the relayer keypair — without this the envelope has zero signatures
+  // and the network rejects with tx_bad_auth.
+  const preparedTx = StellarSdk.rpc
+    .assembleTransaction(opts.transaction, opts.simulationResult)
+    .build();
+  preparedTx.sign(relayerKeypair as StellarSdk.Keypair);
+  return submitToRelayQuorum(preparedTx);
 }
