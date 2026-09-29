@@ -7,7 +7,9 @@ import type {
 } from "./groupEncryption";
 
 const RELAYER_URL = import.meta.env.VITE_RELAYER_URL || "http://localhost:3001";
-const RELAYER_AUTH_TOKEN = import.meta.env.VITE_RELAYER_AUTH_TOKEN || "";
+// Relayer shared secrets must NEVER be baked into the public JS bundle (#647).
+// Browser writes authenticate via CSRF + origin checks; server-to-server
+// clients supply X-Relayer-Auth from a private environment.
 
 /**
  * Generate an idempotency key for payment operations.
@@ -40,9 +42,6 @@ export async function initCsrf(): Promise<void> {
   try {
     const url = `${RELAYER_URL}/csrf-token`;
     const headers = new Headers();
-    if (RELAYER_AUTH_TOKEN) {
-      headers.set("X-Relayer-Auth", RELAYER_AUTH_TOKEN);
-    }
     const response = await fetch(url, {
       method: "GET",
       headers,
@@ -370,11 +369,8 @@ export async function relayerFetch(
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
-      // Add auth header if token is configured
+      // Browser clients must not hold a shared relayer auth token (#647).
       const headers = new Headers(fetchOptions.headers);
-      if (RELAYER_AUTH_TOKEN) {
-        headers.set("X-Relayer-Auth", RELAYER_AUTH_TOKEN);
-      }
 
       // Add idempotency key for write operations
       if (isWrite && idempotencyKey) {
@@ -639,7 +635,6 @@ export interface CommitVoteInput {
   nullifier: string;
   commitmentHash: string;
   timestamp: number;
-  walletAddress?: string;
 }
 
 /**
