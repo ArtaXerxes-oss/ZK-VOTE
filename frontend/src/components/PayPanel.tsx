@@ -19,6 +19,37 @@ export default function PayPanel() {
   const [pending, setPending] = useState<PendingPayment | null>(null);
   const pendingPaymentRef = useRef<PendingPayment | null>(null);
 
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      // Security: Strictly enforce same-origin for payments (blocks evil.com and external embedders)
+      if (!isAllowedMessageOrigin(event.origin, "payment")) {
+        console.warn("Dropped payment postMessage from untrusted or non-same origin:", event.origin);
+        return;
+      }
+
+      const data = event.data;
+      if (!data || typeof data !== "object") return;
+
+      if (data.type === "SET_PAYMENT" && data.payload) {
+        if (data.payload.asset && ["XLM", "USDC", "EURC"].includes(data.payload.asset)) {
+          setAsset(data.payload.asset);
+        }
+        if (typeof data.payload.destination === "string") {
+          setDest(data.payload.destination);
+        }
+        if (typeof data.payload.amount === "string") {
+          setAmount(data.payload.amount);
+        }
+        if (typeof data.payload.memo === "string") {
+          setMemo(data.payload.memo);
+        }
+      }
+    };
+
+    window.addEventListener("message", handleMessage);
+    return () => window.removeEventListener("message", handleMessage);
+  }, []);
+
   const send = async () => {
     if (!dest) return alert("Destination required (G... or M...)");
     
