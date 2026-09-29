@@ -140,6 +140,8 @@ jobs:
           COMMENTS_CONTRACT_ID: 'CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC'
       - name: Check config schema and .env.example are in sync
         run: npm run config:generate && git diff --exit-code .env.example || (echo '::error::.env.example is out of sync! Run: npm run config:generate' && exit 1)
+      - name: Check configuration security
+        run: npm run config:security
       - name: Check migration parity with db-types
         run: |
           # Generate types from migration-driven database
