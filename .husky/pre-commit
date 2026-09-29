@@ -22,6 +22,22 @@ if [ "$SECRET_LEAK" -ne 0 ]; then
 fi
 echo "✓ Secret scan OK"
 
+# Database File Scanner: Block committed *.db files (Issue #535)
+echo "→ Checking for database files..."
+DB_LEAK=0
+for file in $STAGED; do
+    if echo "$file" | grep -qE '\.(db|db-wal|db-shm)$'; then
+        echo "ERROR: Database file detected: $file. Database files must not be committed to git."
+        DB_LEAK=1
+    fi
+done
+
+if [ "$DB_LEAK" -ne 0 ]; then
+    echo "Commit aborted due to database file leakage."
+    exit 1
+fi
+echo "✓ Database file scan OK"
+
 # Format Rust code — only when Rust sources are staged
 if echo "$STAGED" | grep -qE '\.rs$|(^|/)Cargo\.(toml|lock)$'; then
     if command -v cargo >/dev/null 2>&1; then
