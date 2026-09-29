@@ -205,44 +205,54 @@ The blast radius of this vulnerability spanned across five operational surfaces:
 
 ---
 
-# Fix Report — Issues #546, #547, #548 Security Hardening
+# Fix Report — Issues #555, #554, #551, #550 Comprehensive Remediation
 
-**Issues Resolved:**
-- **#546**: `sharp` `file-type` `clamscan` `multer` TOCTOU Between DAO Thumbnail Upload and `pinata` Pin
-- **#547**: `helmet` CSP Trusted Types PayPanel/SwapPanel iframe `postMessage` Origin Check Bypass `SOROSWAP_API`
-- **#548**: `sigstore` `cosign` WASM `dao_registry.wasm` Signature Verification Missing `deploy` Allows Malicious WASM
+**Date:** 2026-09-26  
+**Issues Addressed:**  
+1. **#555**: `backend/.env.example` ANCHOR_USDC_URL ANCHOR_EURC_URL SOROSWAP_API HORIZON_URL Secrets Committed to git RELAYER_SECRET_KEY Pattern  
+2. **#554**: HORIZON_URL SOROBAN_RPC_URL stellar.expert Explorer hash Link testnet vs futurenet Mismatch Verifiable Explorer 404  
+3. **#551**: `prom-client` 15.1.3 Histogram +Inf Buckets route method status daoId Cardinality 10k  
+4. **#550**: OpenTelemetry spanContext config Sampling Head vs Tail PII blindingFactor Leak via Tail Sampling  
 
-## 1. Vulnerability Analysis & Blast Radius
+---
 
-### Issue #546: Upload Validation TOCTOU & Decompression Bomb Vulnerability
-- **Root Cause**: Image file validation (MIME detection, dimensions, threat checks) was decoupled from Pinata pinning. Between the validation step and the pin step, concurrent requests or mutable buffer states created a Time-of-Check to Time-of-Use (TOCTOU) race condition where a benign file could pass inspection while a malicious sharp bomb or polyglot payload was pinned to IPFS. Additionally, DAO thumbnail uploads lacked a dedicated atomic endpoint with role verification.
-- **Blast Radius**: Malicious DAO thumbnails or IPFS images could cause memory exhaustion (decompression bombs) or distribute malicious content through IPFS gateways.
-- **Fix Implemented**:
-  - Implemented `ValidationLockManager` with per-hash/per-resource async transactional locking (`validationLock`).
-  - Unified file validation (`detectMimeType`, embedded script scanning, polyglot checks), Sharp dimensions & metadata stripping, and Pinata pinning into an atomic single-step transaction.
-  - Added authenticated, role-gated DAO thumbnail upload endpoints `POST /daos/:daoId/thumbnail` and `POST /dao/:daoId/thumbnail` with admin verification and atomic pinning.
+## 1. Summary of Changes & Audit Trail
 
-### Issue #547: Missing postMessage Origin Validation & CSP Trusted Types Bypass
-- **Root Cause**: Frontend financial integration components (`PayPanel`, `SwapPanel`, `DepositWithdraw`) were designed for cross-window / iframe communication with Soroswap and host platforms, but lacked strict `event.origin` validation. An attacker embedding the application or sending messages from `evil.com` could trigger unauthorized payment, swap, or deposit state manipulation. Furthermore, Helmet CSP did not enforce Trusted Types (`require-trusted-types-for 'script'`) or restrict `frame-ancestors`.
-- **Blast Radius**: Cross-origin message spoofing triggering unwanted asset transfers or unauthorized transactions.
-- **Fix Implemented**:
-  - Configured Helmet CSP with `requireTrustedTypesFor: ["'script'"]` and restricted `frameAncestors` to `['self', 'https://api.soroswap.finance', 'https://app.soroswap.finance']`.
-  - Added `frontend/src/lib/messageOrigin.ts` enforcing an allowlist for `window.location.origin` and trusted Soroswap endpoints, immediately dropping messages from untrusted origins like `evil.com`.
-  - Wired message listeners in `PayPanel.tsx`, `SwapPanel.tsx`, and `DepositWithdraw.tsx` protected by `isAllowedMessageOrigin`.
-  - Initialized DOM Trusted Types policy in `frontend/src/lib/trustedTypes.ts` and enabled frame-ancestors allowlisting in `index.html`.
+### Issue #555 — Committed Secrets & Secret Key Protection
+- **Root Cause**: Hardcoded asset issuer keys (`GDZRI...`, `GAML...`) and relayer secret pattern (`SDKA...`) present in development config and default fallbacks.
+- **Remediation**:
+  - Replaced hardcoded addresses in `backend/.env.development`, `backend/src/config.ts`, `backend/src/services/payments.ts`, and `frontend/src/config/contracts.ts` with standard base32 placeholders (`GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX` and `SXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX`).
+  - Added secret detection to `.husky/pre-commit` to prevent staging or committing `SDKA...` or raw secret keys.
 
-### Issue #548: Unverified WASM Deployment & Backdoor Risk
-- **Root Cause**: Deployment scripts (`scripts/deploy/deploy-hosted-futurenet.sh`) deployed compiled contract WASM files (e.g. `dao_registry.wasm`, `voting.wasm`) directly to Soroban without cryptographic signature verification. An attacker or corrupted build artifact could introduce a backdoored contract without detection.
-- **Blast Radius**: Deployment of unauthorized contract bytecode on Futurenet/Mainnet capable of manipulating DAO state or voter nullifiers.
-- **Fix Implemented**:
-  - Created `scripts/deploy/verify-wasm-signature.sh` to enforce `cosign` blob / bundle verification and SHA-256 checksum validation prior to contract deployment.
-  - Updated `deploy_contract()` in `deploy-hosted-futurenet.sh` to require signature verification before dispatching deployment transactions.
-  - Created `scripts/sign-wasm.sh` for developer and CI cosign artifact signing.
-  - Added Sigstore Cosign verification step into `.github/workflows/ci.yml`.
+### Issue #554 — Explorer Link Network Mismatch (testnet vs futurenet 404)
+- **Root Cause**: Explorer links in `Profile.tsx` and `DAOInfoPanel.tsx` were hardcoded to `testnet`, producing 404s when running on `futurenet` or `public` networks.
+- **Remediation**:
+  - Implemented network-aware `getExplorerUrl` helper in `frontend/src/lib/utils.ts` and `backend/src/utils/explorer.ts`.
+  - Dynamically routes explorer links to `/explorer/testnet/`, `/explorer/futurenet/`, or `/explorer/public/` depending on the active network configuration.
 
-## 2. Monitoring & Alerts Added
-- `ZKVoteRelayerUploadValidationAnomaly`: Alerts on abnormal upload validation rejections or TOCTOU lock contention.
-- `ZKVoteRelayerIframeSecurityOriginViolation`: Alerts on blocked cross-origin `postMessage` attempts from unapproved origins.
-- `ZKVoteWasmSignatureVerificationFailure`: Alerts immediately if an unsigned or unverified WASM contract is rejected during deployment.
+### Issue #551 — Prometheus Metric High Cardinality & Histogram Bounding
+- **Root Cause**: `membershipRegistrationTotal` used `dao_id` as a label, and `normalizeRoute` did not sanitize raw IDs/hashes/addresses/query strings. With 10,000 DAOs, infinite metric series caused relayer OOM.
+- **Remediation**:
+  - Replaced `dao_id` label in `membershipRegistrationTotal` with bounded `status` label (`requested`, `submitted`, `limited`).
+  - Hardened `normalizeRoute` in `backend/src/services/metrics.ts` to strip query strings, 64-hex transaction hashes, Stellar addresses (`G...`, `C...`), and numeric route IDs.
+  - Added Prometheus alert `ZKVoteRelayerHighCardinalityMetricWarning` in `monitoring/prometheus/zkvote-alerts.yml`.
+
+### Issue #550 — OpenTelemetry PII `blindingFactor` Redaction & Sampling
+- **Root Cause**: Tail sampling exported raw attributes including `blindingFactor`, `nullifier`, and `relayer_secret` to external OTEL collectors.
+- **Remediation**:
+  - Added `"blindingfactor"` and `"blinding_factor"` to `SENSITIVE_ATTRIBUTE_PATTERNS` in `backend/src/services/tracing.ts`.
+  - Enforced `redactSpanAttributes` inside `exportSpan` in `tracing.ts` and `toOtlpSpan` in `otel.ts` so sensitive cryptographic attributes are hashed with salted sha256 before telemetry export.
+
+---
+
+## 2. Empirical Verification Matrix
+
+| Check | Command | Status |
+|---|---|---|
+| **Issues Regression Suite** | `node --experimental-strip-types --test test/issues-555-554-551-550.test.ts` | **Pass (exit 0)** |
+| **Secret Scan Pre-Commit** | `.husky/pre-commit` | **Pass (No leaked keys)** |
+| **Contract Workspace Build** | `cargo build --target wasm32v1-none --release` | **Pass (exit 0)** |
+| **Contract Integration Tests** | `cargo test -p zkvote-integration-tests -- --test-threads=1` | **Pass (exit 0)** |
+| **Frontend Build** | `npm run build` (in `frontend/`) | **Pass (exit 0)** |
 
 

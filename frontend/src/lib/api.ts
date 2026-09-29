@@ -9,6 +9,20 @@ import type {
 const RELAYER_URL = import.meta.env.VITE_RELAYER_URL || "http://localhost:3001";
 const RELAYER_AUTH_TOKEN = import.meta.env.VITE_RELAYER_AUTH_TOKEN || "";
 
+/**
+ * Generate an idempotency key for payment operations.
+ * Uses crypto.randomUUID if available, falls back to timestamp+random.
+ */
+export function generateIdempotencyKey(prefix = "pay"): string {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) {
+    return `${prefix}_${crypto.randomUUID()}`;
+  }
+  // Fallback for older browsers
+  const timestamp = Date.now();
+  const random = Math.random().toString(36).substring(2, 15);
+  return `${prefix}_${timestamp}_${random}`;
+}
+
 // ============================================
 // CSRF TOKEN MANAGEMENT
 // ============================================
@@ -217,6 +231,7 @@ function isInBackoff(): boolean {
 export interface FetchOptions extends RequestInit {
   maxRetries?: number;
   skipBackoff?: boolean;
+  idempotencyKey?: string;
 }
 
 export class RelayerError extends Error {
@@ -335,6 +350,7 @@ export async function relayerFetch(
   const {
     maxRetries = isWrite ? 1 : 3,
     skipBackoff = false,
+    idempotencyKey,
     ...fetchOptions
   } = options;
   const url = endpoint.startsWith("http")
@@ -358,6 +374,11 @@ export async function relayerFetch(
       const headers = new Headers(fetchOptions.headers);
       if (RELAYER_AUTH_TOKEN) {
         headers.set("X-Relayer-Auth", RELAYER_AUTH_TOKEN);
+      }
+
+      // Add idempotency key for write operations
+      if (isWrite && idempotencyKey) {
+        headers.set("Idempotency-Key", idempotencyKey);
       }
 
       // Add CSRF token for all state-changing requests (POST, PUT, DELETE, PATCH).
