@@ -37,6 +37,12 @@ interface VoteModalProps {
    * default — means the election uses the default circuit (#93).
    */
   merkleDepth?: number;
+  /**
+   * Candidate count bound into the vote circuit public signals.
+   * Must match on-chain `ElectionConfig.num_candidates` (#645).
+   * Defaults to 2 for binary yes/no ballots.
+   */
+  numCandidates?: number;
   daoId: number;
   publicKey: string;
   kit: StellarWalletsKit | null;
@@ -52,6 +58,7 @@ export default function VoteModal({
   voteMode,
   vkVersion: _vkVersion,
   merkleDepth = 0,
+  numCandidates = 2,
   daoId,
   publicKey,
   kit,
@@ -224,6 +231,8 @@ export default function VoteModal({
         daoId: daoId.toString(),
         proposalId: proposalId.toString(),
         voteChoice: choice ? "1" : "0",
+        // Must match on-chain ElectionConfig.num_candidates (binary default: 2)
+        numCandidates: numCandidates.toString(),
         relayerAddress: "0",
         commitment: commitment.toString(), // Private input - computed in circuit, not exposed publicly
         // Note: vkVersion is NOT a circuit signal - it's checked on-chain only
@@ -259,7 +268,7 @@ export default function VoteModal({
 
       if (!isValid) {
         throw new Error(
-          "Proof verification failed locally! This indicates a bug in proof generation.",
+          "Local proof verification failed. Circuit artifacts may be missing or mismatched (check /circuits/vote.wasm and verification_key.json), or the witness may be incomplete.",
         );
       }
 
