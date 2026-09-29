@@ -67,6 +67,9 @@ PLAN-*.md
 # Backend runtime data
 backend/data/events.json
 backend/data/*.db
+backend/temp/
+backend/temp/*
+backend/dist/
 
 # Encrypted backup snapshots and backup encryption keys (Issue #359)
 # Keys are SECRETS — never commit backend/data/backup-keys or snapshots.
