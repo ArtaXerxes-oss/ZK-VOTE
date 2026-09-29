@@ -1,11 +1,10 @@
 // @ts-nocheck
 import { Router } from "express";
 import { sendPayment, sendBatch } from "../services/payments.js";
-import { bodyLimit, queryLimiter, csrfOriginGuard, paymentBatchCostLimiter } from "../middleware/index.js";
+import { bodyLimit, queryLimiter, csrfOriginGuard, paymentBatchCostLimiter, masterKeyGuard } from "../middleware/index.js";
 import { log } from "../services/logger.js";
 import { batch_partial_failure_total, paymentOpsPerMinute } from "../services/metrics.js";
 
-console.error("PAY ROUTES LOADED", new Date().toISOString());
 log("info", "pay_routes_loaded", {});
 
 // In-memory idempotency store (keyed by idempotency header)
@@ -27,9 +26,8 @@ setInterval(() => {
 
 const router = Router();
 
-router.post("/pay", csrfOriginGuard, bodyLimit("5kb"), async (req, res) => {
-  console.error("PAY HANDLER CALLED", JSON.stringify(req.body).slice(0,100));
-  log("info", "pay_hit", { body: req.body });
+router.post("/pay", masterKeyGuard, csrfOriginGuard, bodyLimit("5kb"), async (req, res) => {
+  log("info", "pay_hit", {});
   
   // Check idempotency key
   const idempotencyKey = req.header("Idempotency-Key");
@@ -53,12 +51,12 @@ router.post("/pay", csrfOriginGuard, bodyLimit("5kb"), async (req, res) => {
     
     res.json(r);
   } catch (e: any) {
-    console.error("PAY ERR", e.message, e.stack?.slice(0,500));
-    res.status(500).json({ error: e.message });
+    log("error", "pay_error", { error: e.message });
+    res.status(500).json({ error: "Payment failed" });
   }
 });
 
-router.post("/pay/batch", csrfOriginGuard, bodyLimit("256kb"), paymentBatchCostLimiter, async (req, res) => {
+router.post("/pay/batch", masterKeyGuard, csrfOriginGuard, bodyLimit("256kb"), paymentBatchCostLimiter, async (req, res) => {
   // Check idempotency key
   const idempotencyKey = req.header("Idempotency-Key");
   if (idempotencyKey) {
