@@ -41,7 +41,10 @@ router.post("/pay", masterKeyGuard, csrfOriginGuard, bodyLimit("5kb"), async (re
   
   try {
     const { asset, destination, amount, memo } = req.body;
-    if (!asset || !destination || !amount) return res.status(400).json({ error: "asset, destination, amount required" });
+    if (!asset || !destination || !amount)
+      return res
+        .status(400)
+        .json({ error: "asset, destination, amount required" });
     const r = await sendPayment({ asset, destination, amount, memo });
     
     // Store idempotency result
@@ -69,8 +72,9 @@ router.post("/pay/batch", masterKeyGuard, csrfOriginGuard, bodyLimit("256kb"), p
   
   try {
     const { ops } = req.body;
-    if (!Array.isArray(ops)) return res.status(400).json({ error: "ops array required" });
-    
+    if (!Array.isArray(ops))
+      return res.status(400).json({ error: "ops array required" });
+
     // Record ops per minute metric
     paymentOpsPerMinute.observe(ops.length);
     
@@ -80,17 +84,26 @@ router.post("/pay/batch", masterKeyGuard, csrfOriginGuard, bodyLimit("256kb"), p
       // Already sent 429 response
       return;
     }
-    
-    const r = await sendBatch(ops);
-    
+
+    const headerTenant = req.headers["x-tenant-id"];
+    const tenantId =
+      typeof headerTenant === "string" &&
+      /^[a-zA-Z0-9_-]{1,64}$/.test(headerTenant)
+        ? headerTenant
+        : "default";
+    const r = await sendBatch(ops, tenantId);
+
     // Store idempotency result
     if (idempotencyKey) {
       paymentIdempotency.set(idempotencyKey, { hash: r.hash, timestamp: Date.now() });
     }
-    
+
     res.json(r);
   } catch (e: any) {
-    batch_partial_failure_total.inc({ batch_type: "payments", reason: String(e.message || "unknown") });
+    batch_partial_failure_total.inc({
+      batch_type: "payments",
+      reason: String(e.message || "unknown"),
+    });
     res.status(500).json({ error: e.message });
   }
 });
