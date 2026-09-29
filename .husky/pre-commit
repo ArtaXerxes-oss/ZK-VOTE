@@ -9,7 +9,8 @@ echo "→ Checking for committed secrets..."
 SECRET_LEAK=0
 for file in $STAGED; do
     if [ -f "$file" ]; then
-        if git diff --cached "$file" | grep -E '\+.*(SDKA[A-Z0-9]{52}|RELAYER_SECRET_KEY=S[A-Z2-7]{55})' | grep -v 'SXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'; then
+        # Match SDKA... pattern or any S followed by 55 base32 characters (including actual leaked keys)
+        if git diff --cached "$file" | grep -E '\+.*(SDKA[A-Z0-9]{52}|S[A-Z2-7]{55})' | grep -vE 'SXXXXXXX|REPLACE_ME|placeholder|example'; then
             echo "ERROR: Hardcoded secret key detected in $file! Replace with a placeholder before committing."
             SECRET_LEAK=1
         fi

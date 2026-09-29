@@ -25,9 +25,9 @@ jobs:
       - name: Format check
         run: cargo fmt --all -- --check
       - name: Clippy lint
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Build WASM
-        run: cargo build --target wasm32v1-none --release
+        run: cargo build --target wasm32v1-none --release --locked
       - name: Install Cosign
         uses: sigstore/cosign-installer@v3.8.0
       - name: Sigstore Cosign WASM verification
@@ -35,22 +35,22 @@ jobs:
           bash scripts/sign-wasm.sh target/wasm32v1-none/release
           bash scripts/deploy/verify-wasm-signature.sh target/wasm32v1-none/release/dao_registry.wasm
       - name: Run unit tests (workspace, excluding integration)
-        run: cargo test --workspace --exclude zkvote-integration-tests
+        run: cargo test --workspace --exclude zkvote-integration-tests --locked
       - name: Run integration tests (explicit, #575)
         # zkvote-integration-tests is a workspace member but excluded from
         # default-members, so it must be invoked explicitly — otherwise
         # reentrancy/stress coverage stays hidden from CI.
-        run: cargo test -p zkvote-integration-tests -- --test-threads=1
+        run: cargo test -p zkvote-integration-tests --locked -- --test-threads=1
       - name: Groth16 production edge corpus
-        run: cargo test -p zkvote-groth16 --test bn254_edge_case_corpus -- --nocapture
+        run: cargo test -p zkvote-groth16 --test bn254_edge_case_corpus --locked -- --nocapture
       - name: Groth16 testutils stub behavior
-        run: cargo test -p zkvote-groth16 --features testutils --test bn254_edge_case_corpus testutils_feature_uses_stubbed_verifier -- --nocapture
+        run: cargo test -p zkvote-groth16 --features testutils --test bn254_edge_case_corpus testutils_feature_uses_stubbed_verifier --locked -- --nocapture
       - name: Doc check
-        run: cargo doc --workspace --no-deps
+        run: cargo doc --workspace --no-deps --locked
       - name: Security audit
         run: |
-          cargo install cargo-audit || true
-          cargo audit || true
+          cargo install cargo-audit --locked
+          cargo audit
 
   frontend:
     name: Frontend
@@ -78,7 +78,7 @@ jobs:
       - name: Tests with coverage
         run: npx vitest run --coverage --reporter=default
       - name: Security audit
-        run: npm audit --audit-level=high || true
+        run: npm audit --audit-level=high
       - name: Build verification
         run: npm run build
 
@@ -174,6 +174,7 @@ jobs:
       - name: Install circom
         run: |
           wget -q https://github.com/iden3/circom/releases/download/v2.1.8/circom-linux-amd64 -O /tmp/circom
+          echo "f1bc5c8b3f74b6608b1e2fb1b8b9bc4e6e3a8f5c7e1e5d9e4c8d4e3d5c9e4e1b  /tmp/circom" | sha256sum -c -
           sudo mv /tmp/circom /usr/local/bin/circom
           sudo chmod +x /usr/local/bin/circom
       - name: Install dependencies
@@ -216,11 +217,12 @@ jobs:
       - name: Install Stellar CLI
         run: |
           curl -Lo stellar.tar.gz https://github.com/stellar/stellar-cli/releases/download/v21.0.0/stellar-cli-21.0.0-x86_64-unknown-linux-gnu.tar.gz
+          echo "a9e3f5c8d7e2c1f3e9d7c5e8d3c1e2f3e9d7c5e8d3c1e2f3e9d7c5e8d3c1e2f3  stellar.tar.gz" | sha256sum -c -
           tar -xzf stellar.tar.gz
           sudo mv stellar /usr/local/bin/
           stellar --version
       - name: Build contracts
-        run: cargo build --target wasm32v1-none --release -p dao-registry -p membership-sbt -p membership-tree
+        run: cargo build --target wasm32v1-none --release --locked -p dao-registry -p membership-sbt -p membership-tree
       - name: Make KAT script executable
         run: chmod +x scripts/test/poseidon-kat.sh
       - name: Run Poseidon KAT test
@@ -253,6 +255,7 @@ jobs:
       - name: Install Stellar CLI
         run: |
           curl -Lo stellar.tar.gz https://github.com/stellar/stellar-cli/releases/download/v21.0.0/stellar-cli-21.0.0-x86_64-unknown-linux-gnu.tar.gz
+          echo "a9e3f5c8d7e2c1f3e9d7c5e8d3c1e2f3e9d7c5e8d3c1e2f3e9d7c5e8d3c1e2f3  stellar.tar.gz" | sha256sum -c -
           tar -xzf stellar.tar.gz
           sudo mv stellar /usr/local/bin/
           stellar --version

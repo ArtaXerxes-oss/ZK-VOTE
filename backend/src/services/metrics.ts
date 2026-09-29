@@ -536,7 +536,7 @@ export const wsRateLimitTotal = new Counter({
 export const relayerKeyBalance = new Gauge({
   name: "zkvote_relayer_key_balance_xlm",
   help: "Current balance of relayer keys in XLM",
-  labelNames: ["key_id", "public_key", "role"] as const,
+  labelNames: ["key_id", "role"] as const,
   registers: [register],
 });
 
@@ -550,14 +550,14 @@ export const relayerKeyRotationsTotal = new Counter({
 export const relayerKeyAgeSeconds = new Gauge({
   name: "zkvote_relayer_key_age_seconds",
   help: "Age of relayer key in seconds since activation",
-  labelNames: ["key_id", "public_key"] as const,
+  labelNames: ["key_id"] as const,
   registers: [register],
 });
 
 export const relayerKeyTransactionsTotal = new Counter({
   name: "zkvote_relayer_key_transactions_total",
   help: "Total transactions signed by relayer key",
-  labelNames: ["key_id", "public_key"] as const,
+  labelNames: ["key_id"] as const,
   registers: [register],
 });
 
@@ -577,12 +577,13 @@ export function normalizeRoute(path: string): string {
   return cleanPath
     .replace(/\/[0-9a-f]{20,}/gi, "/:hash")
     .replace(/\/[CG][A-Z2-7]{55}/g, "/:address")
+    .replace(/\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, "/:uuid")
     .replace(
-      /\/(dao|proposal|comment|comments|events|bridge|circuits|ipfs|membership|claim|pay|swap|ramp|nullifier|root|root-history)\/[^/]+/gi,
+      /\/(dao|proposal|comment|comments|events|bridge|circuits|ipfs|membership|claim|pay|swap|ramp|nullifier|root|root-history|vote|threshold|randomness)\/[^/]+/gi,
       "/$1/:param",
     )
     .replace(
-      /\/(proposal|nullifier|root-history|comments|comment)\/[^/]+\/[^/]+/gi,
+      /\/(proposal|nullifier|root-history|comments|comment|threshold)\/[^/]+\/[^/]+/gi,
       "/$1/:param/:id2",
     )
     .replace(/\/(root|daos|ready|health|config|metrics|db)(\/|$)/g, "/$1$2");
