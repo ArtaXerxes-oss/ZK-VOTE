@@ -138,7 +138,8 @@ export interface VoteProofInput {
   daoId: string;
   proposalId: string;
   voteChoice: string; // "0" for no, "1" for yes
-  numCandidates: string; // Total candidates in the election — PUBLIC signal, bounds voteChoice in-circuit
+  /** Public signal: must match on-chain ElectionConfig.num_candidates (#645) */
+  numCandidates: string; // bounds voteChoice in-circuit
   commitment: string; // Identity commitment - private input, computed internally in circuit
   pathElements: string[];
   pathIndices: number[];
@@ -184,6 +185,8 @@ export interface BridgeProofInput {
   sbtLeaf: string;
   sbtContractAddr: string;
   memberAddr: string;
+  /** EVM chain id — public signal for cross-chain domain separation (#649) */
+  chainId?: string;
   votingPathElements: string[];
   votingPathIndices: number[];
   sbtPathElements: string[];
@@ -607,7 +610,7 @@ export async function generateVoteProof(
     const circuitVersion = input.circuitVersion ?? "v1";
     let circuitInput: Record<string, unknown>;
     if (circuitVersion === "v2") {
-      // vote_v2.circom: 10 public signals
+      // vote_v2.circom: 10 public signals + private blindingFactor
       circuitInput = {
         root: input.root,
         nullifier: input.nullifier,
@@ -790,6 +793,7 @@ export async function generateBridgeProof(
       voteChoice: input.voteChoice,
       voteRoot: input.voteRoot,
       sbtRoot: input.sbtRoot,
+      chainId: input.chainId ?? "0",
       secret: input.secret,
       salt: input.salt,
       votingPathElements: input.votingPathElements,
