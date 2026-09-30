@@ -13,8 +13,8 @@ WORKDIR /app
 # Copy package files
 COPY frontend/package*.json ./
 
-# Install all dependencies
-RUN npm install --legacy-peer-deps
+# Install all dependencies with frozen lockfile for hermetic build
+RUN npm ci --legacy-peer-deps
 
 # Copy frontend source
 COPY frontend/ .

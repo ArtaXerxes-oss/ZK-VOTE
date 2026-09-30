@@ -83,7 +83,11 @@
     "zod": "3.25.76"
   },
   "overrides": {
-    "axios": "1.16.0"
+    "axios": "1.16.0",
+    "snarkjs": "0.7.5",
+    "circom_runtime": "0.1.28",
+    "ffjavascript": "0.2.63",
+    "wasmcurves": "0.2.2"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

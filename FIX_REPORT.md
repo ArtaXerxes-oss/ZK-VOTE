@@ -255,4 +255,22 @@ The blast radius of this vulnerability spanned across five operational surfaces:
 | **Contract Integration Tests** | `cargo test -p zkvote-integration-tests -- --test-threads=1` | **Pass (exit 0)** |
 | **Frontend Build** | `npm run build` (in `frontend/`) | **Pass (exit 0)** |
 
+---
+
+# Fix Report — Issue #549: ZK Dependency Confusion & Float Pinning
+
+**Issue Resolved:**
+- **#549**: Dependency Confusion `snarkjs 0.7.5` vs `0.7.3` `circom_runtime 0.1.28` `ffjavascript 0.2.63` `wasmcurves` Float
+
+## 1. Vulnerability Analysis & Blast Radius
+- **Root Cause**: Floating dependency ranges (`^0.7.0`, `^0.7.5`, `^14.0.0`) in `frontend/package.json`, `circuits/ceremony/package.json`, `circuits/package.json`, and root `package.json` allowed npm resolution to install varying sub-dependencies (`snarkjs 0.7.3` vs `0.7.5`, `ffjavascript`, `circom_runtime`, `wasmcurves`). Differences between local development environments and CI runners produced incompatible `.zkey` headers and Groth16 proving errors.
+- **Blast Radius**: Proving failures, invalid public input parsing, and subtle incompatibility between Phase 2 ceremony artifacts and on-chain Soroban verifiers.
+- **Fix Implemented**:
+  - Pinned `snarkjs: 0.7.5` exactly across root `package.json`, `frontend/package.json`, `circuits/ceremony/package.json`, `circuits/package.json`, and `tests/e2e/package.json`.
+  - Pinned `@stellar/stellar-sdk: 15.1.0` in `frontend/package.json` and `tests/e2e/package.json` matching backend.
+  - Added workspace-wide package `overrides` for `snarkjs: 0.7.5`, `circom_runtime: 0.1.28`, `ffjavascript: 0.2.63`, and `wasmcurves: 0.2.2`.
+  - Enforced hermetic builds in `frontend/Dockerfile` using `npm ci --legacy-peer-deps`.
+  - Added dependency pinning verification assertions in `.github/workflows/ci.yml`.
+
+
 
