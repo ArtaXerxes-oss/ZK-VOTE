@@ -224,6 +224,13 @@ jobs:
           sudo chmod +x /usr/local/bin/circom
       - name: Install dependencies
         run: npm ci
+      - name: Verify exact dependency pinning
+        run: |
+          node -e "
+            const p = require('./package.json');
+            if (p.dependencies.snarkjs !== '0.7.5') throw new Error('snarkjs not pinned to 0.7.5');
+            console.log('✓ snarkjs exact version verified');
+          "
       - name: Run tests
         run: npm test
       - name: Run Soroban BE conversion parity tests (#369)

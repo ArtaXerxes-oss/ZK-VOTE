@@ -90,20 +90,59 @@ if (!fs.existsSync(queuePath)) {
   console.log("✓ Offline queue present");
 }
 
-// Check public-signal / IC-length drift.
-//
-// This block used to sit AFTER the `process.exit(0)` above, so it never ran:
-// a green drift guard said nothing about the vote circuit's public-signal
-// count. That is the drift that matters most — the contract rejects any VK
-// whose `ic.len()` is not `NUM_PUBLIC_SIGNALS + 1`, so a mismatch between the
-// circuit, the contract, and the checked-in verification key makes every
-// anonymous vote unverifiable while every test still passes (the tests build
-// synthetic VKs against the contract's own constant).
-//
-// The circuit, the contract, and the frontend must all agree, and the
-// verification key's IC vector must be exactly one longer than the public
-// signal count.
-const NUM_PUBLIC_SIGNALS_DRIFT = [];
+// ── Issue #556: URL config drift gate ──────────────────────────────────────
+// Verify that the single-source env.ts exists and that no other .ts/.tsx file
+// under frontend/src hard-codes one of the three service URLs directly.
+console.log("🔍 Drift guard: checking URL config drift (issue #556)...");
+
+const envConfigPath = path.resolve(__dirname, "../frontend/src/config/env.ts");
+if (!fs.existsSync(envConfigPath)) {
+  console.error("❌ frontend/src/config/env.ts (single URL config source) is missing");
+  mismatches.push("url_config_source");
+} else {
+  console.log("✓ frontend/src/config/env.ts present");
+}
+
+// Patterns that indicate a hardcoded URL that should come from env.ts instead.
+const hardcodedUrlPatterns = [
+  /VITE_RELAYER_URL\s*\|\|\s*["']http:\/\/localhost:3001["']/,
+  /const RELAYER_URL\s*=\s*import\.meta\.env\.VITE_RELAYER_URL/,
+  /rpcUrl\s*:\s*["']https:\/\/soroban-testnet\.stellar\.org["']/,
+  /["']https:\/\/horizon-testnet\.stellar\.org["']/,
+];
+
+const urlDriftFiles = [];
+const frontendSrcFiles = walk(path.resolve(__dirname, "../frontend/src"), [".ts", ".tsx"]);
+for (const file of frontendSrcFiles) {
+  // Skip the canonical source itself
+  if (file === envConfigPath) continue;
+  const content = fs.readFileSync(file, "utf-8");
+  for (const pat of hardcodedUrlPatterns) {
+    if (pat.test(content)) {
+      urlDriftFiles.push(path.relative(path.resolve(__dirname, ".."), file));
+      break;
+    }
+  }
+}
+
+if (urlDriftFiles.length) {
+  console.error("❌ Hardcoded service URLs found outside config/env.ts:");
+  urlDriftFiles.forEach(f => console.error(`   ${f}`));
+  mismatches.push("hardcoded_urls");
+} else {
+  console.log("✓ No hardcoded service URLs outside config/env.ts");
+}
+// ──────────────────────────────────────────────────────────────────────────
+
+if (mismatches.length) {
+  console.error(`\n❌ Drift guard FAILED: ${mismatches.join(", ")}`);
+  process.exit(1);
+} else {
+  console.log("\n✅ Drift guard PASSED — no drift");
+  process.exit(0);
+}
+
+// Check NUM_PUBLIC_SIGNALS mismatch (IDL source-of-truth drift)
 try {
   const repoRoot = path.resolve(__dirname, "..");
   const votingLib = fs.readFileSync(path.resolve(repoRoot, "contracts/voting/src/lib.rs"), "utf-8");

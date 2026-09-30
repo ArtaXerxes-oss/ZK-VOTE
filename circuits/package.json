@@ -46,5 +46,11 @@
   "devDependencies": {
     "circom_tester": "^0.0.19",
     "jest": "^29.7.0"
+  },
+  "overrides": {
+    "snarkjs": "0.7.5",
+    "circom_runtime": "0.1.28",
+    "ffjavascript": "0.2.63",
+    "wasmcurves": "0.2.2"
   }
 }
