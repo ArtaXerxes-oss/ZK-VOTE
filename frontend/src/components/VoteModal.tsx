@@ -217,6 +217,16 @@ export default function VoteModal({
       // Step 4b: Generate ZK proof
       setProgress("Generating zero-knowledge proof...");
 
+      // The circuit constrains `voteChoice < numCandidates` against this PUBLIC
+      // signal, and the contract verifies the proof with the same value. It
+      // cannot be omitted: at 0 the constraint is unsatisfiable and no witness
+      // exists. The contract floors the value at 2 because a vote is binary.
+      const numCandidatesResult =
+        await clients.voting.get_effective_num_candidates({
+          dao_id: BigInt(daoId),
+          proposal_id: BigInt(proposalId),
+        });
+
       const proofInput: ProofInput = {
         // Public signals
         root: root.toString(),
@@ -224,7 +234,7 @@ export default function VoteModal({
         daoId: daoId.toString(),
         proposalId: proposalId.toString(),
         voteChoice: choice ? "1" : "0",
-        relayerAddress: "0",
+        numCandidates: numCandidatesResult.result.toString(),
         commitment: commitment.toString(), // Private input - computed in circuit, not exposed publicly
         // Note: vkVersion is NOT a circuit signal - it's checked on-chain only
         // Private signals

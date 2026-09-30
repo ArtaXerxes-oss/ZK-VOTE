@@ -223,6 +223,15 @@ export class ZkVoteClient {
     // 7. Generate proof
     const wasmPath = "/circuits/vote.wasm";
     const zkeyPath = "/circuits/vote_final.zkey";
+    // The circuit constrains `voteChoice < numCandidates` against this PUBLIC
+    // signal, and the contract verifies the proof with the same value it
+    // reports here. It is not optional: with numCandidates left at 0 the
+    // constraint is unsatisfiable and no witness can be produced. The contract
+    // floors the value at 2 because a vote is binary.
+    const numCandidates = await this.voting.get_effective_num_candidates({
+      dao_id: BigInt(params.daoId),
+      proposal_id: BigInt(params.proposalId),
+    });
     const proofInput: VoteProofInput = {
       secret,
       salt,
@@ -232,7 +241,7 @@ export class ZkVoteClient {
       daoId: params.daoId.toString(),
       proposalId: params.proposalId.toString(),
       voteChoice: params.choice ? "1" : "0",
-      relayerAddress: "0",
+      numCandidates: (numCandidates as unknown as { result: number }).result.toString(),
       commitment,
       pathElements,
       pathIndices,

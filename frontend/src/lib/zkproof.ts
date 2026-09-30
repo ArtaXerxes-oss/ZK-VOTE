@@ -138,12 +138,15 @@ export interface VoteProofInput {
   daoId: string;
   proposalId: string;
   voteChoice: string; // "0" for no, "1" for yes
-  relayerAddress: string; // Relayer Stellar address - public signal for relayer binding
+  numCandidates: string; // Total candidates in the election — PUBLIC signal, bounds voteChoice in-circuit
   commitment: string; // Identity commitment - private input, computed internally in circuit
   pathElements: string[];
   pathIndices: number[];
   circuitVersion?: string; // "v1" or "v2" (defaults to "v1")
   chainId?: string; // Required for v2 circuits
+  familyNullifier?: string; // v2 only: breaks cross-proposal linkability
+  nonce?: string; // v2 only: re-vote counter
+  relayerAddress?: string; // v2 only
 }
 
 export interface CommentProofInput {
@@ -608,27 +611,46 @@ export async function generateVoteProof(
       circuitInput = {
         root: input.root,
         nullifier: input.nullifier,
+        familyNullifier: input.familyNullifier ?? "0",
         daoId: input.daoId,
         proposalId: input.proposalId,
         voteChoice: input.voteChoice,
+        numCandidates: input.numCandidates,
         chainId: input.chainId || "0",
-        relayerAddress: input.relayerAddress,
+        nonce: input.nonce ?? "0",
+        relayerAddress: input.relayerAddress ?? "0",
         secret: input.secret,
         salt: input.salt,
+        blindingFactor: input.blindingFactor,
         pathElements: input.pathElements,
         pathIndices: input.pathIndices,
       };
     } else {
-      // vote_v1.circom: 7 public signals (vote.circom with relayerAddress)
+      // vote.circom: 6 public signals
+      //   [root, nullifier, daoId, proposalId, voteChoice, numCandidates]
+      //
+      // `numCandidates` is not optional. The circuit range-checks
+      // `voteChoice < numCandidates` against this PUBLIC input so the contract
+      // can be sure the proof enforced the candidate bound the election was
+      // configured with. Leaving it out leaves the signal at 0, which makes
+      // `voteChoice < 0` unsatisfiable — so the witness cannot be generated at
+      // all. It was missing here, which is one reason the anonymous vote path
+      // produced no usable proofs.
+      //
+      // There is deliberately no `relayerAddress` on this path: see the header
+      // of circuits/vote_template.circom. A public signal that the verifier
+      // cannot check binds nothing, and adding it made the IC length disagree
+      // with the contract.
       circuitInput = {
         root: input.root,
         nullifier: input.nullifier,
         daoId: input.daoId,
         proposalId: input.proposalId,
         voteChoice: input.voteChoice,
-        relayerAddress: input.relayerAddress,
+        numCandidates: input.numCandidates,
         secret: input.secret,
         salt: input.salt,
+        blindingFactor: input.blindingFactor,
         pathElements: input.pathElements,
         pathIndices: input.pathIndices,
       };
