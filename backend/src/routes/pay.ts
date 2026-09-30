@@ -1,6 +1,11 @@
 // @ts-nocheck
 import { Router } from "express";
-import { sendPayment, sendBatch } from "../services/payments.js";
+import {
+  sendPayment,
+  sendBatch,
+  getTrustlineStatus,
+  type PaymentAsset,
+} from "../services/payments.js";
 import { bodyLimit, queryLimiter, csrfOriginGuard, paymentBatchCostLimiter, masterKeyGuard } from "../middleware/index.js";
 import { log } from "../services/logger.js";
 import { batch_partial_failure_total, paymentOpsPerMinute } from "../services/metrics.js";
@@ -25,6 +30,24 @@ setInterval(() => {
 }, 60000);
 
 const router = Router();
+
+router.get("/pay/trustline", queryLimiter, async (req, res) => {
+  const account = typeof req.query.account === "string" ? req.query.account : "";
+  const asset = typeof req.query.asset === "string" ? req.query.asset : "";
+  if (!account || !["XLM", "USDC", "EURC"].includes(asset)) {
+    return res.status(400).json({ error: "account and valid asset are required" });
+  }
+  try {
+    const status = await getTrustlineStatus(account, asset as PaymentAsset);
+    return res.json(status);
+  } catch (e: any) {
+    log("warn", "trustline_preflight_error", {
+      asset,
+      error: e.message,
+    });
+    return res.status(502).json({ error: "Unable to verify destination trustline" });
+  }
+});
 
 router.post("/pay", masterKeyGuard, csrfOriginGuard, bodyLimit("5kb"), async (req, res) => {
   log("info", "pay_hit", {});
@@ -55,7 +78,10 @@ router.post("/pay", masterKeyGuard, csrfOriginGuard, bodyLimit("5kb"), async (re
     res.json(r);
   } catch (e: any) {
     log("error", "pay_error", { error: e.message });
-    res.status(500).json({ error: "Payment failed" });
+    const trustlineError = /trustline|issuer authorization/i.test(String(e.message));
+    res.status(trustlineError ? 409 : 500).json({
+      error: trustlineError ? e.message : "Payment failed",
+    });
   }
 });
 

@@ -341,8 +341,8 @@ const MAX_UPGRADE_PAYLOAD_LEN: u32 = 4096;
 /// cannot be used to force an unbounded proof.
 pub const MAX_MERKLE_DEPTH: u32 = 32;
 
-/// Largest batch `cast_votes` accepts (#90). Matches the verifier's own cap:
-/// the whole pairing check has to fit in one transaction's resource budget.
+/// Largest batch `cast_votes` accepts. Protocol-25 BN254 pairing cost is
+/// guarded at one proof per submission to prevent host-metering amplification.
 pub const MAX_VOTE_BATCH: u32 = zkvote_groth16::batch::MAX_BATCH_SIZE;
 
 // Circuit constants

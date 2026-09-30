@@ -82,10 +82,11 @@ const BATCH_TRANSCRIPT_TAG: &[u8] = b"ZKVOTE-GROTH16-BATCH-V1";
 /// `N / 2^128` while keeping the scalars small.
 const RANDOMIZER_BYTES: u32 = 16;
 
-/// Batches larger than this are rejected outright: the pairing check has to fit
-/// in one transaction's resource budget, and an unbounded batch is a way to
-/// build a transaction that can never succeed.
-pub const MAX_BATCH_SIZE: u32 = 64;
+/// Until Protocol-25 pairing costs can be bounded independently of attacker
+/// input, only a single proof may enter the verification path. A one-proof
+/// "batch" delegates to the normal four-pairing verifier, so no N+3 host
+/// pairing vector can be attacker-amplified.
+pub const MAX_BATCH_SIZE: u32 = 1;
 
 /// Builds the Fiat-Shamir transcript for a batch.
 ///

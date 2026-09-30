@@ -669,6 +669,20 @@ export const paymentOpsPerMinute = new Histogram({
   registers: [register],
 });
 
+export const swapContractRejectedTotal = new Counter({
+  name: "zkvote_swap_contract_rejected_total",
+  help: "Soroswap quote responses rejected because the returned contract id was absent or did not match the pinned router",
+  labelNames: ["reason"] as const,
+  registers: [register],
+});
+
+export const trustlinePreflightFailureTotal = new Counter({
+  name: "zkvote_trustline_preflight_failure_total",
+  help: "Payment or swap operations rejected before submission because a required Stellar trustline was missing or unauthorized",
+  labelNames: ["asset", "role", "reason"] as const,
+  registers: [register],
+});
+
 export const costRateLimitExceeded = new Counter({
   name: "zkvote_cost_rate_limit_exceeded_total",
   help: "Total cost-based rate limit violations",

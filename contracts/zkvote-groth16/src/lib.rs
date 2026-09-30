@@ -115,6 +115,11 @@ pub trait Groth16Curve {
 
 pub struct Bn254Curve;
 
+/// A Groth16 verification equation has exactly four pairing terms. Rejecting
+/// any other cardinality before entering the host function prevents callers
+/// from turning an oversized vector into a Protocol-25 budget exhaustion path.
+pub const GROTH16_PAIRING_TERMS: u32 = 4;
+
 impl Groth16Curve for Bn254Curve {
     type G1 = Bn254G1Affine;
     type G2 = Bn254G2Affine;
@@ -149,6 +154,14 @@ impl Groth16Curve for Bn254Curve {
         -point.clone()
     }
     fn pairing_check(env: &Env, g1: Vec<Self::G1>, g2: Vec<Self::G2>) -> bool {
+        // Fail before crossing the host boundary: metering the host pairing
+        // primitive is intentionally not our first line of DoS defence.
+        if g1.len() != GROTH16_PAIRING_TERMS
+            || g2.len() != GROTH16_PAIRING_TERMS
+            || g1.len() != g2.len()
+        {
+            return false;
+        }
         env.crypto().bn254().pairing_check(g1, g2)
     }
 }
