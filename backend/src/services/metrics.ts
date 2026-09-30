@@ -651,6 +651,13 @@ export const batch_partial_failure_total = new Counter({
   registers: [register],
 });
 
+export const priorityStarvationTotal = new Counter({
+  name: "zkvote_priority_starvation_total",
+  help: "Total priority-queued requests that waited beyond the starvation threshold",
+  labelNames: ["priority", "route"] as const,
+  registers: [register],
+});
+
 // ============================================
 // COST-BASED RATE LIMITING METRICS (#525)
 // ============================================
