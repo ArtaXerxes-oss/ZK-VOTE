@@ -509,7 +509,7 @@ export function costBasedLimiter(opts: {
   windowMs: number;
   message: string;
 }): RequestHandler {
-  const store = getStore(opts.name);
+  getStore(opts.name);
   const costTracking = new Map<string, { cost: number; resetTime: number }>();
 
   return (req: Request, res: Response, next: NextFunction) => {
