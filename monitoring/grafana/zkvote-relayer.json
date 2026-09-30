@@ -17,46 +17,6 @@
     { "id": 9, "type": "timeseries", "title": "Batch Partial Failures", "gridPos": { "h": 8, "w": 12, "x": 0, "y": 32 }, "targets": [{ "expr": "sum by (batch_type, reason) (rate(zkvote_batch_partial_failure_total{job=~\"$job\"}[5m]))", "legendFormat": "{{batch_type}}: {{reason}}" }] },
     { "id": 10, "type": "timeseries", "title": "Session & Rate Limit Store Size", "gridPos": { "h": 8, "w": 12, "x": 12, "y": 32 }, "targets": [{ "expr": "zkvote_session_store_size{job=~\"$job\"}", "legendFormat": "sessions" }, { "expr": "zkvote_rate_limit_store_size{job=~\"$job\"}", "legendFormat": "rate limit keys" }] },
     { "id": 11, "type": "timeseries", "title": "DAO Reconciliation (#577)", "gridPos": { "h": 8, "w": 12, "x": 0, "y": 40 }, "targets": [{ "expr": "sum by (status) (rate(zkvote_dao_reconciliation_runs_total{job=~\"$job\"}[5m]))", "legendFormat": "runs: {{status}}" }, { "expr": "sum by (mismatch_type) (rate(zkvote_reconciliation_mismatch_total{job=~\"$job\",component=\"dao_tally\"}[5m]))", "legendFormat": "dao_tally: {{mismatch_type}}" }, { "expr": "time() - zkvote_dao_reconciliation_last_ok_timestamp_seconds{job=~\"$job\"}", "legendFormat": "seconds since last clean run" }] },
-    {
-      "id": 12,
-      "type": "stat",
-      "title": "Health Endpoint Status (#556)",
-      "description": "Last HTTP status returned by GET /health. 200 = healthy, 503 = degraded. Alert fires when value > 200.",
-      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 40 },
-      "fieldConfig": {
-        "defaults": {
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 201 }
-            ]
-          },
-          "mappings": [
-            { "type": "value", "options": { "200": { "text": "OK", "color": "green" }, "503": { "text": "DEGRADED", "color": "red" } } }
-          ]
-        }
-      },
-      "targets": [{ "expr": "zkvote_health_endpoint_status{job=~\"$job\"}", "legendFormat": "status" }]
-    },
-    {
-      "id": 13,
-      "type": "stat",
-      "title": "Config Drift Violations (#556)",
-      "description": "Non-zero means a URL or env config was hardcoded outside config/env.ts at startup.",
-      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 40 },
-      "fieldConfig": {
-        "defaults": {
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 1 }
-            ]
-          }
-        }
-      },
-      "targets": [{ "expr": "sum(zkvote_config_drift_detected_total{job=~\"$job\"})", "legendFormat": "drift violations" }]
-    }
+    { "id": 12, "type": "timeseries", "title": "Priority Starvation (#602)", "gridPos": { "h": 8, "w": 12, "x": 12, "y": 40 }, "targets": [{ "expr": "sum by (priority, route) (increase(zkvote_priority_starvation_total{job=~\"$job\"}[5m]))", "legendFormat": "{{priority}} {{route}}" }] }
   ]
 }

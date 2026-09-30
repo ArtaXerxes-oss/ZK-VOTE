@@ -8,8 +8,14 @@ import { relayerKeypair } from "./stellar.js";
 import { relayerKeyManager } from "./relayerKeyManager.js";
 import { log } from "./logger.js";
 import { getDb } from "./db.js";
+import {
+  canonicalizeStellarAmount,
+  parseStroops,
+} from "../utils/stellarAmount.js";
 
-const horizonServer = new (StellarSdk.Horizon as any).Server((config as any).horizonUrl || "https://horizon-testnet.stellar.org");
+const horizonServer = new (StellarSdk.Horizon as any).Server(
+  (config as any).horizonUrl || "https://horizon-testnet.stellar.org",
+);
 log("info", "payments_loaded", {});
 
 export type PaymentAsset = "XLM" | "USDC" | "EURC";
@@ -69,7 +75,7 @@ export async function sendPayment(op: PaymentOp): Promise<{ hash: string }> {
   log("info", "payment_via_horizon", {});
   const asset = getAsset(op.asset);
   const dest = op.destination;
-  const amount = op.amount;
+  const amount = canonicalizeStellarAmount(op.amount);
   const account = await (horizonServer as any).loadAccount(
     relayerKeypair.publicKey(),
   );
@@ -180,7 +186,6 @@ export async function sendBatch(
     }
     throw err;
   }
-
   const account = await (horizonServer as any).loadAccount(
     relayerKeypair.publicKey(),
   );
@@ -194,7 +199,7 @@ export async function sendBatch(
       StellarSdk.Operation.payment({
         destination: op.destination,
         asset,
-        amount: op.amount,
+        amount: canonicalizeStellarAmount(op.amount),
       }),
     );
   }
@@ -221,8 +226,11 @@ export async function swapStrictSend(
   destMin: string,
   destination: string,
 ): Promise<{ hash: string }> {
+  if (sendAsset === destAsset) throw new Error("Swap assets must be distinct");
   const sendA = getAsset(sendAsset);
   const destA = getAsset(destAsset);
+  const canonicalSendAmount = canonicalizeStellarAmount(sendAmount);
+  const canonicalDestMin = canonicalizeStellarAmount(destMin, true);
   const account = await (horizonServer as any).loadAccount(
     relayerKeypair.publicKey(),
   );
@@ -233,10 +241,10 @@ export async function swapStrictSend(
     .addOperation(
       StellarSdk.Operation.pathPaymentStrictSend({
         sendAsset: sendA,
-        sendAmount,
+        sendAmount: canonicalSendAmount,
         destination,
         destAsset: destA,
-        destMin,
+        destMin: canonicalDestMin,
         path: [],
       } as any),
     )
@@ -254,13 +262,23 @@ export async function swapStrictSend(
  * @param destAsset Asset to receive
  * @returns Estimated destination amount and payment routing path
  */
+export interface StrictSendQuote {
+  sendAmount: string;
+  sendStroops: string;
+  destAmount: string;
+  destStroops: string;
+  path: unknown[];
+}
 export async function quoteStrictSend(
   sendAsset: PaymentAsset,
   sendAmount: string,
   destAsset: PaymentAsset,
-): Promise<{ destAmount: string; path: any[] }> {
+): Promise<StrictSendQuote> {
+  if (sendAsset === destAsset) throw new Error("Swap assets must be distinct");
   const sendA = getAsset(sendAsset);
   const destA = getAsset(destAsset);
+  const canonicalSendAmount = canonicalizeStellarAmount(sendAmount);
+  const sendStroops = parseStroops(canonicalSendAmount);
   // Horizon Server strictSendPaths
   const horizonUrl =
     (config as any).horizonUrl || "https://horizon-testnet.stellar.org";
@@ -269,16 +287,27 @@ export async function quoteStrictSend(
     send_asset_type: sendA.isNative() ? "native" : "credit_alphanum4",
     send_asset_code: sendA.isNative() ? "" : sendA.getCode(),
     send_asset_issuer: sendA.isNative() ? "" : sendA.getIssuer(),
-    send_amount: sendAmount,
-    destination_assets: `${destA.getCode()}:${destA.getIssuer()}`, // for native, handled
+    send_amount: canonicalSendAmount,
+    destination_assets: destA.isNative()
+      ? "native"
+      : `${destA.getCode()}:${destA.getIssuer()}`,
   });
   try {
     const url = `${horizonUrl}/paths/strict-send?${params.toString()}`;
     const res = await fetch(url);
+    if (!res.ok)
+      throw new Error(`Horizon strict-send returned HTTP ${res.status}`);
     const j: any = await res.json();
     if (j._embedded && j._embedded.records && j._embedded.records[0]) {
       const r = j._embedded.records[0];
-      return { destAmount: r.destination_amount, path: r.path };
+      const destStroops = parseStroops(String(r.destination_amount));
+      return {
+        sendAmount: canonicalSendAmount,
+        sendStroops: sendStroops.toString(),
+        destAmount: canonicalizeStellarAmount(String(r.destination_amount)),
+        destStroops: destStroops.toString(),
+        path: Array.isArray(r.path) ? r.path : [],
+      };
     }
     throw new Error("No path found for the requested swap");
   } catch (e) {
