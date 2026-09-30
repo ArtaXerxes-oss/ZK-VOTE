@@ -609,6 +609,65 @@ vars == <<daoAdmin, daoExists, membershipOpen, membersCanPropose,
 Spec == Init /\ [][Next]_vars
 
 (*-----------------------------------------------------------------------*)
+(* Liveness: VoteMode::Trailing starvation (Issue #552)                  *)
+(*                                                                        *)
+(* Trailing proposals accept a vote from member m iff                    *)
+(*   rootIndexMap[dao][root] >= proposalInfo[dao][p].earliest_root_idx   *)
+(*   rootIndexMap[dao][root] >= minValidRootIdx[dao]                     *)
+(*                                                                        *)
+(* Starvation occurs when FIFO root eviction (MAX_ROOT_HISTORY = 30)     *)
+(* removes a member's root before they vote. The fairness assumption      *)
+(* below asserts that the system cannot *forever* block a valid trailing  *)
+(* voter: as long as their root remains in history and the proposal is    *)
+(* Active, a Vote step is always eventually enabled and taken.            *)
+(*                                                                        *)
+(* WF_vars(Vote(…)) ensures that whenever voting is continuously enabled  *)
+(* for a (dao, proposal, nullifier, root) tuple it eventually fires.      *)
+(* This is a *weak* fairness condition — appropriate because the vote     *)
+(* action is assumed to be continuously retried by a live voter.          *)
+(*-----------------------------------------------------------------------*)
+
+(* Helper: is a root currently valid for trailing-mode voting? *)
+TrailingRootValid(dao, proposal, root) ==
+    /\ proposalState[dao][proposal] = "Active"
+    /\ proposalInfo[dao][proposal].vote_mode = "Trailing"
+    /\ \E i \in 1..Len(rootHistory[dao]): rootHistory[dao][i] = root
+    /\ rootIndexMap[dao][root] >= proposalInfo[dao][proposal].earliest_root_idx
+    /\ rootIndexMap[dao][root] >= minValidRootIdx[dao]
+
+(* Fairness: every enabled trailing vote step for a live voter eventually fires. *)
+FairVoting ==
+    \A dao \in DaoId, proposal \in ProposalId,
+       nullifier \in Nullifier, root \in 0..MAX_NULLIFIERS:
+        WF_vars(Vote(dao, proposal, nullifier, root, TRUE))
+
+(*
+ * TrailingLiveness:
+ * For any trailing proposal p in dao d and any nullifier n with a valid root r —
+ * if voting is always eventually enabled (root stays in history, proposal stays
+ * Active, nullifier unused) then a vote is eventually cast.
+ *
+ * Expressed as: □◇(TrailingRootValid ∧ ¬nullifierUsed) ⇒ ◇nullifierUsed
+ *
+ * TLC checks this under the fair specification below.
+ *)
+TrailingVoteEventuallyAccepted ==
+    \A dao \in DaoId, proposal \in ProposalId,
+       nullifier \in Nullifier, root \in 0..MAX_NULLIFIERS:
+        ([]<>(TrailingRootValid(dao, proposal, root)
+              /\ ~nullifierUsed[dao][proposal][nullifier]))
+        => <>nullifierUsed[dao][proposal][nullifier]
+
+TrailingLiveness == TrailingVoteEventuallyAccepted
+
+(*-----------------------------------------------------------------------*)
+(* Fair specification — used for liveness checking                       *)
+(* FairSpec adds weak fairness on Vote actions to Spec.                  *)
+(*-----------------------------------------------------------------------*)
+
+FairSpec == Spec /\ FairVoting
+
+(*-----------------------------------------------------------------------*)
 (* Invariants to check with TLC                                           *)
 (*-----------------------------------------------------------------------*)
 

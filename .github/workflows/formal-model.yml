@@ -10,11 +10,12 @@ on:
 
 jobs:
   tlc-check:
-    name: TLC Model Checker
+    name: TLC Model Checker (required)
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: formal-model
+
     steps:
       - uses: actions/checkout@v4
 
@@ -33,7 +34,7 @@ jobs:
       - name: Verify TLA+ files exist
         run: |
           if [ ! -f "ZKVote.tla" ]; then
-            echo "Error: ZKVote.tla not found"
+            echo "::error::ZKVote.tla not found"
             exit 1
           fi
           if [ ! -f "ZKVote.ci.cfg" ]; then
@@ -67,6 +68,7 @@ jobs:
     defaults:
       run:
         working-directory: formal-model
+
     steps:
       - uses: actions/checkout@v4
 
