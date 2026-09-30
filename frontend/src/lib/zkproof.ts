@@ -138,12 +138,18 @@ export interface VoteProofInput {
   daoId: string;
   proposalId: string;
   voteChoice: string; // "0" for no, "1" for yes
+  /** Public signal: must match on-chain ElectionConfig.num_candidates (#645) */
+  numCandidates: string;
   relayerAddress: string; // Relayer Stellar address - public signal for relayer binding
   commitment: string; // Identity commitment - private input, computed internally in circuit
   pathElements: string[];
   pathIndices: number[];
   circuitVersion?: string; // "v1" or "v2" (defaults to "v1")
   chainId?: string; // Required for v2 circuits
+  /** v2 only: Poseidon(secret, daoId, proposalId, chainId) */
+  familyNullifier?: string;
+  /** v2 only: revote nonce (defaults to "0") */
+  nonce?: string;
 }
 
 export interface CommentProofInput {
@@ -181,6 +187,8 @@ export interface BridgeProofInput {
   sbtLeaf: string;
   sbtContractAddr: string;
   memberAddr: string;
+  /** EVM chain id — public signal for cross-chain domain separation (#649) */
+  chainId?: string;
   votingPathElements: string[];
   votingPathIndices: number[];
   sbtPathElements: string[];
@@ -604,31 +612,37 @@ export async function generateVoteProof(
     const circuitVersion = input.circuitVersion ?? "v1";
     let circuitInput: Record<string, unknown>;
     if (circuitVersion === "v2") {
-      // vote_v2.circom: 10 public signals
+      // vote_v2.circom: 10 public signals + private blindingFactor
       circuitInput = {
         root: input.root,
         nullifier: input.nullifier,
+        familyNullifier: input.familyNullifier ?? "0",
         daoId: input.daoId,
         proposalId: input.proposalId,
         voteChoice: input.voteChoice,
+        numCandidates: input.numCandidates,
         chainId: input.chainId || "0",
+        nonce: input.nonce ?? "0",
         relayerAddress: input.relayerAddress,
         secret: input.secret,
         salt: input.salt,
+        blindingFactor: input.blindingFactor,
         pathElements: input.pathElements,
         pathIndices: input.pathIndices,
       };
     } else {
-      // vote_v1.circom: 7 public signals (vote.circom with relayerAddress)
+      // vote_v1.circom: 7 public signals including numCandidates (#645)
       circuitInput = {
         root: input.root,
         nullifier: input.nullifier,
         daoId: input.daoId,
         proposalId: input.proposalId,
         voteChoice: input.voteChoice,
+        numCandidates: input.numCandidates,
         relayerAddress: input.relayerAddress,
         secret: input.secret,
         salt: input.salt,
+        blindingFactor: input.blindingFactor,
         pathElements: input.pathElements,
         pathIndices: input.pathIndices,
       };
@@ -768,6 +782,7 @@ export async function generateBridgeProof(
       voteChoice: input.voteChoice,
       voteRoot: input.voteRoot,
       sbtRoot: input.sbtRoot,
+      chainId: input.chainId ?? "0",
       secret: input.secret,
       salt: input.salt,
       votingPathElements: input.votingPathElements,
