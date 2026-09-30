@@ -1,4 +1,7 @@
+export const HORIZON_ASSET_DECIMALS = 7;
+export const SOROBAN_ASSET_DECIMALS = 12;
 const STROOPS_PER_UNIT = 10_000_000n;
+const SOROBAN_UNITS_PER_STROOP = 100_000n;
 const MAX_STELLAR_STROOPS = 9_223_372_036_854_775_807n;
 
 export function parseStroops(amount: string, allowZero = false): bigint {
@@ -25,4 +28,22 @@ export function formatStroops(stroops: bigint): string {
 
 export function canonicalizeStellarAmount(amount: string): string {
   return formatStroops(parseStroops(amount));
+}
+
+export function horizonStroopsToSorobanAmount(stroops: bigint): bigint {
+  if (stroops < 0n || stroops > MAX_STELLAR_STROOPS) {
+    throw new Error("Stroop amount is outside the Stellar range");
+  }
+  return stroops * SOROBAN_UNITS_PER_STROOP;
+}
+
+export function sorobanAmountToHorizonStroops(amount: bigint): bigint {
+  if (amount < 0n || amount % SOROBAN_UNITS_PER_STROOP !== 0n) {
+    throw new Error("Soroban amount is not exactly representable with 7 Horizon decimals");
+  }
+  const stroops = amount / SOROBAN_UNITS_PER_STROOP;
+  if (stroops > MAX_STELLAR_STROOPS) {
+    throw new Error("Converted amount is outside the Stellar range");
+  }
+  return stroops;
 }

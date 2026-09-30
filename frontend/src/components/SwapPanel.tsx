@@ -2,7 +2,11 @@ import { useState, useEffect } from "react";
 import { Button } from "./ui/Button";
 import { relayerFetch } from "../lib/api";
 import { isAllowedMessageOrigin } from "../lib/messageOrigin";
-import { canonicalizeStellarAmount, parseStroops } from "../lib/stellarAmount";
+import {
+  canonicalizeStellarAmount,
+  horizonStroopsToSorobanAmount,
+  parseStroops,
+} from "../lib/stellarAmount";
 
 type Asset = "XLM" | "USDC" | "EURC";
 
@@ -67,11 +71,27 @@ export default function SwapPanel() {
       }
       if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
       const exactDestination = canonicalizeStellarAmount(String(j.destAmount));
+      const destinationStroops = parseStroops(exactDestination);
       if (
         j.destStroops !== undefined &&
-        BigInt(String(j.destStroops)) !== parseStroops(exactDestination)
+        BigInt(String(j.destStroops)) !== destinationStroops
       ) {
         throw new Error("Quote amount did not match its stroop value");
+      }
+      if (
+        j.destSorobanAmount !== undefined &&
+        BigInt(String(j.destSorobanAmount)) !==
+          horizonStroopsToSorobanAmount(destinationStroops)
+      ) {
+        throw new Error("Quote used an invalid 7-to-12 decimal conversion");
+      }
+      if (j.source === "soroswap") {
+        const expectedContractId = import.meta.env.VITE_SOROSWAP_CONTRACT_ID as
+          | string
+          | undefined;
+        if (!expectedContractId || j.contractId !== expectedContractId) {
+          throw new Error("Soroswap quote contract is not pinned or does not match");
+        }
       }
       setQuote(`${exactDestination} ${to}`);
     } catch (e: any) {

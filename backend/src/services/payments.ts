@@ -8,8 +8,10 @@ import { relayerKeypair } from "./stellar.js";
 import { relayerKeyManager } from "./relayerKeyManager.js";
 import { log } from "./logger.js";
 import { getDb } from "./db.js";
+import { trustlinePreflightFailureTotal } from "./metrics.js";
 import {
   canonicalizeStellarAmount,
+  horizonStroopsToSorobanAmount,
   parseStroops,
 } from "../utils/stellarAmount.js";
 
@@ -36,6 +38,133 @@ export function getAsset(code: PaymentAsset): StellarSdk.Asset {
   const issuer = ISSUERS[code];
   if (!issuer) throw new Error(`Issuer not configured for ${code}`);
   return new StellarSdk.Asset(code, issuer);
+}
+
+export interface TrustlineStatus {
+  account: string;
+  asset: PaymentAsset;
+  issuer: string | null;
+  exists: boolean;
+  authorized: boolean;
+  ready: boolean;
+  reason?: "missing_trustline" | "issuer_authorization_required";
+}
+
+function baseAccountId(address: string): string {
+  const extract = (StellarSdk as any).extractBaseAddress;
+  if (typeof extract === "function") {
+    try {
+      return extract(address);
+    } catch {
+      // Fall through to Horizon validation for ordinary G... addresses.
+    }
+  }
+  return address;
+}
+
+function findTrustline(account: any, asset: StellarSdk.Asset): any | undefined {
+  if (asset.isNative()) return undefined;
+  return (account.balances ?? []).find(
+    (line: any) =>
+      line.asset_code === asset.getCode() &&
+      line.asset_issuer === asset.getIssuer(),
+  );
+}
+
+export async function getTrustlineStatus(
+  accountId: string,
+  assetCode: PaymentAsset,
+): Promise<TrustlineStatus> {
+  if (assetCode === "XLM") {
+    return {
+      account: baseAccountId(accountId),
+      asset: assetCode,
+      issuer: null,
+      exists: true,
+      authorized: true,
+      ready: true,
+    };
+  }
+
+  const asset = getAsset(assetCode);
+  const account = await (horizonServer as any).loadAccount(baseAccountId(accountId));
+  const line = findTrustline(account, asset);
+  const exists = Boolean(line);
+  const authorized = exists && line.is_authorized !== false;
+  return {
+    account: baseAccountId(accountId),
+    asset: assetCode,
+    issuer: asset.getIssuer(),
+    exists,
+    authorized,
+    ready: exists && authorized,
+    reason: !exists
+      ? "missing_trustline"
+      : !authorized
+        ? "issuer_authorization_required"
+        : undefined,
+  };
+}
+
+async function assertDestinationTrustline(
+  accountId: string,
+  assetCode: PaymentAsset,
+): Promise<void> {
+  if (assetCode === "XLM") return;
+  const status = await getTrustlineStatus(accountId, assetCode);
+  if (status.ready) return;
+
+  const reason = status.reason ?? "missing_trustline";
+  trustlinePreflightFailureTotal.inc({
+    asset: assetCode,
+    role: "destination",
+    reason,
+  });
+  throw new Error(
+    reason === "issuer_authorization_required"
+      ? `${assetCode} trustline exists but is not authorized by issuer ${status.issuer}`
+      : `Destination must create a ${assetCode} trustline to issuer ${status.issuer} before payment`,
+  );
+}
+
+export async function ensureRelayerTrustline(
+  assetCode: PaymentAsset,
+): Promise<void> {
+  if (assetCode === "XLM") return;
+
+  const relayer = relayerKeypair.publicKey();
+  let status = await getTrustlineStatus(relayer, assetCode);
+  if (status.ready) return;
+  if (status.exists && !status.authorized) {
+    trustlinePreflightFailureTotal.inc({
+      asset: assetCode,
+      role: "relayer",
+      reason: "issuer_authorization_required",
+    });
+    throw new Error(`${assetCode} relayer trustline is awaiting issuer authorization`);
+  }
+
+  const account = await (horizonServer as any).loadAccount(relayer);
+  const tx = new StellarSdk.TransactionBuilder(account, {
+    fee: "10000",
+    networkPassphrase: config.networkPassphrase,
+  })
+    .addOperation(StellarSdk.Operation.changeTrust({ asset: getAsset(assetCode) }))
+    .setTimeout(30)
+    .build();
+  await relayerKeyManager.signTransaction(tx);
+  await (horizonServer as any).submitTransaction(tx);
+
+  status = await getTrustlineStatus(relayer, assetCode);
+  if (!status.ready) {
+    const reason = status.reason ?? "missing_trustline";
+    trustlinePreflightFailureTotal.inc({
+      asset: assetCode,
+      role: "relayer",
+      reason,
+    });
+    throw new Error(`${assetCode} relayer trustline was created but is not authorized`);
+  }
 }
 
 /**
@@ -76,6 +205,10 @@ export async function sendPayment(op: PaymentOp): Promise<{ hash: string }> {
   const asset = getAsset(op.asset);
   const dest = op.destination;
   const amount = canonicalizeStellarAmount(op.amount);
+  if (op.asset !== "XLM") {
+    await ensureRelayerTrustline(op.asset);
+    await assertDestinationTrustline(dest, op.asset);
+  }
   const account = await (horizonServer as any).loadAccount(
     relayerKeypair.publicKey(),
   );
@@ -127,13 +260,7 @@ export function parseAmountToStroops(amount: string): bigint {
   if (!amount || typeof amount !== "string") {
     throw new Error("Invalid amount: must be a non-empty string");
   }
-  const trimmed = amount.trim();
-  if (!/^\d+(\.\d{1,7})?$/.test(trimmed)) {
-    throw new Error(`Invalid payment amount format: ${amount}`);
-  }
-  const [whole, fraction = ""] = trimmed.split(".");
-  const paddedFraction = fraction.padEnd(7, "0");
-  return BigInt(whole) * 10_000_000n + BigInt(paddedFraction);
+  return parseStroops(amount.trim());
 }
 
 /**
@@ -170,6 +297,20 @@ export async function sendBatch(
     return { hash, ops: ops.length };
   }
 
+  // Validate every credit-asset trustline before persisting idempotency state.
+  // A rejected preflight must remain retryable and must not look completed.
+  const creditAssets = Array.from(
+    new Set(ops.map((op) => op.asset).filter((asset) => asset !== "XLM")),
+  ) as PaymentAsset[];
+  for (const assetCode of creditAssets) {
+    await ensureRelayerTrustline(assetCode);
+  }
+  for (const op of ops) {
+    if (op.asset !== "XLM") {
+      await assertDestinationTrustline(op.destination, op.asset);
+    }
+  }
+
   try {
     db.prepare(
       "INSERT INTO payment_jobs (id, tenant_id, amount, ops, created_at) VALUES (?,?,?,?,?)",
@@ -186,6 +327,7 @@ export async function sendBatch(
     }
     throw err;
   }
+
   const account = await (horizonServer as any).loadAccount(
     relayerKeypair.publicKey(),
   );
@@ -231,6 +373,16 @@ export async function swapStrictSend(
   const destA = getAsset(destAsset);
   const canonicalSendAmount = canonicalizeStellarAmount(sendAmount);
   const canonicalDestMin = canonicalizeStellarAmount(destMin, true);
+  if (sendAsset !== "XLM") {
+    await ensureRelayerTrustline(sendAsset);
+  }
+  if (destAsset !== "XLM") {
+    if (baseAccountId(destination) === relayerKeypair.publicKey()) {
+      await ensureRelayerTrustline(destAsset);
+    } else {
+      await assertDestinationTrustline(destination, destAsset);
+    }
+  }
   const account = await (horizonServer as any).loadAccount(
     relayerKeypair.publicKey(),
   );
@@ -265,8 +417,10 @@ export async function swapStrictSend(
 export interface StrictSendQuote {
   sendAmount: string;
   sendStroops: string;
+  sendSorobanAmount: string;
   destAmount: string;
   destStroops: string;
+  destSorobanAmount: string;
   path: unknown[];
 }
 export async function quoteStrictSend(
@@ -304,8 +458,10 @@ export async function quoteStrictSend(
       return {
         sendAmount: canonicalSendAmount,
         sendStroops: sendStroops.toString(),
+        sendSorobanAmount: horizonStroopsToSorobanAmount(sendStroops).toString(),
         destAmount: canonicalizeStellarAmount(String(r.destination_amount)),
         destStroops: destStroops.toString(),
+        destSorobanAmount: horizonStroopsToSorobanAmount(destStroops).toString(),
         path: Array.isArray(r.path) ? r.path : [],
       };
     }

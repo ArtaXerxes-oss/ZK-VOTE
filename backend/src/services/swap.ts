@@ -6,9 +6,12 @@ import {
   swapStrictSend,
   type PaymentAsset,
 } from "./payments.js";
+import { config } from "../config.js";
 import { log } from "./logger.js";
+import { swapContractRejectedTotal } from "./metrics.js";
 import {
   canonicalizeStellarAmount,
+  horizonStroopsToSorobanAmount,
   parseStroops,
 } from "../utils/stellarAmount.js";
 
@@ -20,14 +23,31 @@ export async function getQuote(
   amount: string,
 ) {
   if (sendAsset === destAsset) throw new Error("Swap assets must be distinct");
-  const q = await quoteStrictSend(sendAsset, amount, destAsset);
-  log("info", "swap_quote", {
-    sendAsset,
-    destAsset,
-    amount,
-    destAmount: q.destAmount,
-  });
-  return q;
+  try {
+    const q = await quoteStrictSend(sendAsset, amount, destAsset);
+    log("info", "swap_quote", {
+      source: "horizon",
+      sendAsset,
+      destAsset,
+      amount,
+      destAmount: q.destAmount,
+    });
+    return { ...q, source: "horizon" as const };
+  } catch (horizonError) {
+    const fallback = await getSoroswapQuote(sendAsset, destAsset, amount);
+    if (fallback) {
+      log("info", "swap_quote", {
+        source: "soroswap",
+        sendAsset,
+        destAsset,
+        amount,
+        destAmount: fallback.destAmount,
+        contractId: fallback.contractId,
+      });
+      return { ...fallback, path: [], source: "soroswap" as const };
+    }
+    throw horizonError;
+  }
 }
 
 export async function executeSwap(
@@ -46,21 +66,57 @@ export async function getSoroswapQuote(
   sendAsset: PaymentAsset,
   destAsset: PaymentAsset,
   amount: string,
-): Promise<{ destAmount: string; destStroops: string } | null> {
-  const url = process.env.SOROSWAP_API || "https://api.soroswap.finance/quote";
+): Promise<{
+  destAmount: string;
+  destStroops: string;
+  destSorobanAmount: string;
+  contractId: string;
+} | null> {
+  const expectedContractId = (config as any).soroswapContractId as
+    | string
+    | undefined;
+  if (!expectedContractId) {
+    log("warn", "soroswap_fallback_disabled", {
+      reason: "contract_id_not_pinned",
+    });
+    return null;
+  }
+
+  const url = (config as any).soroswapApi as string;
   try {
     const res = await fetch(
       `${url}?from=${sendAsset}&to=${destAsset}&amount=${amount}`,
     );
     if (!res.ok) return null;
     const j: any = await res.json();
+    const returnedContractId = String(
+      j.contractId ?? j.contract_id ?? j.routerContractId ?? "",
+    );
+    if (returnedContractId !== expectedContractId) {
+      const reason = returnedContractId
+        ? "contract_id_mismatch"
+        : "missing_contract_id";
+      swapContractRejectedTotal.inc({ reason });
+      log("error", "soroswap_quote_rejected", {
+        reason,
+        expectedContractId,
+        returnedContractId: returnedContractId || undefined,
+      });
+      return null;
+    }
+
     const rawAmount = String(j.amountOut ?? j.destAmount ?? "");
     const destStroops = parseStroops(rawAmount);
     return {
       destAmount: canonicalizeStellarAmount(rawAmount),
       destStroops: destStroops.toString(),
+      destSorobanAmount: horizonStroopsToSorobanAmount(destStroops).toString(),
+      contractId: returnedContractId,
     };
-  } catch {
+  } catch (error) {
+    log("warn", "soroswap_quote_unavailable", {
+      error: (error as Error).message,
+    });
     return null;
   }
 }
