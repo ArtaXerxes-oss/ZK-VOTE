@@ -1,6 +1,13 @@
 #!/bin/bash
 set -e
 
+# SECURITY WARNING:
+# - This script uses the same Stellar key for relayer, admin, and guardian roles
+# - In production, generate SEPARATE keys for each role using 'stellar keys generate'
+# - Never commit secret keys to version control
+# - Verify network passphrase matches your target network before deploying
+# - This script does NOT validate key format - check RELAYER_SECRET_KEY manually
+
 echo "=== Complete DaoVote Deployment Script ==="
 echo "This script will:"
 echo "1. Build all contracts"
@@ -80,6 +87,16 @@ deploy_contract() {
   local wasm="$2"
   shift 2
   local args=("$@")
+
+  # Sigstore/Cosign verification: verify WASM integrity and signature before deploying (fail-closed)
+  if [ ! -f "$SCRIPT_DIR/verify-wasm-signature.sh" ]; then
+    echo "ERROR: Verifier script $SCRIPT_DIR/verify-wasm-signature.sh not found. Deployment rejected." >&2
+    return 1
+  fi
+  bash "$SCRIPT_DIR/verify-wasm-signature.sh" "$wasm" || {
+    echo "ERROR: Cosign signature verification failed for $wasm ($name). Deployment rejected." >&2
+    return 1
+  }
 
   local max_attempts=5
   local attempt=1
@@ -403,12 +420,31 @@ if [ -f "backend/.env" ]; then
 fi
 
 # Get secret key from stellar CLI if not already set
+# WARNING: Generate separate keys for relayer and admin in production
+# Using the same key for multiple roles violates principle of least privilege
 KEY_SECRET=$(stellar keys show "$KEY_NAME" 2>/dev/null || echo "")
 
-# Use existing values or defaults
-RELAYER_SECRET="${EXISTING_RELAYER_SECRET:-${KEY_SECRET:-REPLACE_ME_RELAYER_SECRET}}"
+# Use existing values or generate new ones
+# In production: NEVER reuse the same key for relayer, admin, and guardian
+if [ -n "$EXISTING_RELAYER_SECRET" ]; then
+  RELAYER_SECRET="$EXISTING_RELAYER_SECRET"
+elif [ -n "$KEY_SECRET" ]; then
+  warn "SECURITY: Using $KEY_NAME for relayer. Generate dedicated keys in production!"
+  RELAYER_SECRET="$KEY_SECRET"
+else
+  warn "SECURITY: No relayer key configured. Set RELAYER_SECRET_KEY manually!"
+  RELAYER_SECRET="REPLACE_ME_RELAYER_SECRET"
+fi
+
+if [ -n "$EXISTING_ADMIN_SECRET" ]; then
+  ADMIN_SECRET="$EXISTING_ADMIN_SECRET"
+else
+  warn "SECURITY: No dedicated admin key configured. Using relayer key as fallback."
+  warn "In production: Generate separate keys with 'stellar keys generate admin'"
+  ADMIN_SECRET="${KEY_SECRET:-REPLACE_ME_ADMIN_SECRET}"
+fi
+
 AUTH_TOKEN="${EXISTING_AUTH_TOKEN:-$(openssl rand -hex 32)}"
-ADMIN_SECRET="${EXISTING_ADMIN_SECRET:-${KEY_SECRET:-REPLACE_ME_ADMIN_SECRET}}"
 CORS_ORIGINS="${EXISTING_CORS:-http://localhost:5173,http://localhost:5174}"
 
 cat > backend/.env << EOF

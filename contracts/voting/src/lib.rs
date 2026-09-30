@@ -216,6 +216,10 @@ pub enum VotingError {
     InvalidRelayerAddress = 92,
     /// Verification key has not been attested by an MPC ceremony transcript
     VkNotAttested = 93,
+    /// Caller is not the configured bridge contract (#648)
+    NotBridge = 94,
+    /// Bridge contract address has not been configured (#648)
+    BridgeContractNotSet = 95,
 
     // ── Coarse categories (100–106) ────────────────────────────────────────
     // An anonymous submission collapses to one of these so a relayer cannot
@@ -498,6 +502,8 @@ pub enum DataKey {
     SybilWeightCap(u64, u64), // (dao_id, proposal_id)
     /// Running weighted tally for a proposal.
     WeightedTally(u64, u64), // (dao_id, proposal_id)
+    /// Authorized Soroban bridge contract that may call record_bridged_vote (#648).
+    BridgeContract,
 }
 
 /// A single quadratic-voting ballot as stored on-chain.
@@ -641,7 +647,8 @@ pub struct VkProposal {
     pub proposed_at: u64,
     pub execute_after: u64,
     pub required_approvals: u32,
-    pub approvals: u32,
+    /// Distinct approver addresses — must match circuit-registry layout (#650)
+    pub approvers: Vec<Address>,
     pub status: VkProposalStatus,
     pub dao_id: Option<u64>,
 }
@@ -1458,21 +1465,22 @@ impl Voting {
         // - [CAP-0074](https://github.com/stellar/stellar-protocol/blob/master/core/cap-0074.md)
         // - Groth16 paper Section 3.2 - Verification algorithm
 
-        // If TranscriptRegistry is configured, require on-chain attestation
-        if let Some(transcript_registry) = env
+        // CRITICAL (#662): Transcript registry attestation is now REQUIRED.
+        // Fail open prevented by making transcript verification mandatory when registry exists.
+        let transcript_registry = env
             .storage()
             .instance()
             .get::<_, Address>(&TRANSCRIPT_REGISTRY)
-        {
-            let vk_hash = Self::hash_vk(&env, &vk);
-            let is_attested: bool = env.invoke_contract(
-                &transcript_registry,
-                &Symbol::new(&env, "is_vk_attested"),
-                soroban_sdk::vec![&env, vk_hash.into_val(&env)],
-            );
-            if !is_attested {
-                panic_with_error!(&env, VotingError::VkNotAttested);
-            }
+            .expect("Transcript registry not configured - cannot verify VK attestation");
+
+        let vk_hash = Self::hash_vk(&env, &vk);
+        let is_attested: bool = env.invoke_contract(
+            &transcript_registry,
+            &Symbol::new(&env, "is_vk_attested"),
+            soroban_sdk::vec![&env, vk_hash.into_val(&env)],
+        );
+        if !is_attested {
+            panic_with_error!(&env, VotingError::VkNotAttested);
         }
 
         // Bump VK version
@@ -2483,6 +2491,133 @@ impl Voting {
         Self::bump_persistent(&env, &prop_key);
 
         // Clear reentrancy lock before emitting event
+        Self::clear_reentrancy_lock(&env);
+
+        VoteEvent {
+            dao_id,
+            proposal_id,
+            choice: vote_choice,
+            nullifier,
+        }
+        .publish(&env);
+    }
+
+    /// Configure the Soroban bridge contract authorized to call
+    /// [`Self::record_bridged_vote`] (#648). Guardian-only.
+    pub fn set_bridge_contract(env: Env, guardian: Address, bridge: Address) {
+        Self::bump_instance(&env);
+        guardian.require_auth();
+        Self::require_guardian(&env, &guardian);
+        env.storage()
+            .instance()
+            .set(&DataKey::BridgeContract, &bridge);
+    }
+
+    pub fn bridge_contract(env: Env) -> Address {
+        Self::bump_instance(&env);
+        env.storage()
+            .instance()
+            .get(&DataKey::BridgeContract)
+            .unwrap_or_else(|| panic_with_error!(&env, VotingError::BridgeContractNotSet))
+    }
+
+    /// Record a vote that was already verified on the EVM bridge.
+    /// Callable only by the configured bridge contract — no Groth16 check here
+    /// because authenticity was established by the EVM verifier + authorized
+    /// Soroban relayer (#648).
+    pub fn record_bridged_vote(
+        env: Env,
+        dao_id: u64,
+        proposal_id: u64,
+        vote_choice: bool,
+        nullifier: U256,
+        root: U256,
+    ) {
+        Self::bump_instance(&env);
+        Self::require_not_paused(&env);
+
+        let bridge: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::BridgeContract)
+            .unwrap_or_else(|| panic_with_error!(&env, VotingError::BridgeContractNotSet));
+        bridge.require_auth();
+
+        let ctx = PathContext::Anonymous;
+        Self::set_reentrancy_lock(&env);
+
+        Self::assert_in_field(&env, ctx, &nullifier);
+        Self::assert_in_field(&env, ctx, &root);
+
+        if nullifier == U256::from_u32(&env, 0) {
+            panic_coarse(&env, ctx, VotingError::InvalidNullifier);
+        }
+
+        let null_key = storage::nullifier_used_key(dao_id, proposal_id, nullifier.clone());
+        if env.storage().temporary().has(&null_key) || env.storage().persistent().has(&null_key) {
+            panic_coarse(&env, ctx, VotingError::NullifierUsed);
+        }
+
+        let prop_key = DataKey::Proposal(dao_id, proposal_id);
+        let mut proposal: ProposalInfo = env
+            .storage()
+            .persistent()
+            .get(&prop_key)
+            .expect("proposal not found");
+
+        let now = env.ledger().timestamp();
+        if proposal.state != ProposalState::Active {
+            panic_coarse(&env, ctx, VotingError::VotingClosed);
+        }
+        if proposal.end_time != 0 && now > proposal.end_time {
+            panic_coarse(&env, ctx, VotingError::VotingClosed);
+        }
+
+        env.storage().temporary().set(&null_key, &true);
+        Self::bump_nullifier_ttl(&env, &null_key, dao_id, proposal_id);
+
+        Self::assert_root_eligible(&env, ctx, dao_id, &proposal, &root);
+
+        let election_config: ElectionConfig = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ElectionConfig(dao_id, proposal_id))
+            .unwrap_or(ElectionConfig {
+                snapshot_ledger: 0,
+                min_balance: 0,
+                twab_window: 0,
+                candidate_seed: None,
+                num_candidates: 0,
+                vdf_output: None,
+                vdf_delay: 0,
+                max_revotes: 0,
+                merkle_root_set_at: None,
+                commitment_window: 0,
+                merkle_depth: 0,
+            });
+
+        let vote_choice_index: u32 = if vote_choice { 1 } else { 0 };
+        if election_config.num_candidates > 0 && vote_choice_index >= election_config.num_candidates
+        {
+            panic_coarse(&env, ctx, VotingError::InvalidCandidateIndex);
+        }
+
+        Self::accumulate_nullifier(&env, dao_id, proposal_id, &nullifier);
+
+        if vote_choice {
+            proposal.yes_votes = proposal
+                .yes_votes
+                .checked_add(1)
+                .unwrap_or_else(|| panic_coarse(&env, ctx, VotingError::TallyOverflow));
+        } else {
+            proposal.no_votes = proposal
+                .no_votes
+                .checked_add(1)
+                .unwrap_or_else(|| panic_coarse(&env, ctx, VotingError::TallyOverflow));
+        }
+        env.storage().persistent().set(&prop_key, &proposal);
+        Self::bump_persistent(&env, &prop_key);
+
         Self::clear_reentrancy_lock(&env);
 
         VoteEvent {
@@ -3637,7 +3772,7 @@ impl Voting {
                 let now = env.ledger().timestamp();
                 proposal.status == VkProposalStatus::Pending
                     && now >= proposal.execute_after
-                    && proposal.approvals >= proposal.required_approvals
+                    && proposal.approvers.len() >= proposal.required_approvals
             }
             None => false,
         }

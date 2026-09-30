@@ -551,6 +551,17 @@ Next ==
          CreateAndInitDao(dao, creator, depth, commitment, newRoot)
 
 (*-----------------------------------------------------------------------*)
+(* Helper definitions for TLC model checking                              *)
+(*-----------------------------------------------------------------------*)
+
+vars == <<daoAdmin, daoExists, membershipOpen, membersCanPropose,
+          sbtMember, sbtRevoked,
+          treeInitialized, nextLeafIndex, nextRootIndex, rootHistory,
+          rootIndexMap, leafValue, memberLeafIndex, minValidRootIdx,
+          proposalState, proposalInfo, nullifierUsed,
+          vkSet, vkVersion, currentRoot, registryAuth, nextDaoId>>
+
+(*-----------------------------------------------------------------------*)
 (* The complete specification                                             *)
 (*-----------------------------------------------------------------------*)
 
@@ -627,16 +638,5 @@ Invariants ==
     /\ FIFOSafety
     /\ MinRootCorrectness
     /\ AuthDelegationSoundness
-
-(*-----------------------------------------------------------------------*)
-(* Helper definitions for TLC model checking                              *)
-(*-----------------------------------------------------------------------*)
-
-vars == <<daoAdmin, daoExists, membershipOpen, membersCanPropose,
-          sbtMember, sbtRevoked,
-          treeInitialized, nextLeafIndex, nextRootIndex, rootHistory,
-          rootIndexMap, leafValue, memberLeafIndex, minValidRootIdx,
-          proposalState, proposalInfo, nullifierUsed,
-          vkSet, vkVersion, currentRoot, registryAuth, nextDaoId>>
 
 =============================================================================

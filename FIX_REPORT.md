@@ -203,161 +203,74 @@ The blast radius of this vulnerability spanned across five operational surfaces:
 | **Frontend Production Build** | `npm run build` (in `frontend/`) | **0 Errors, bundle verified (exit 0)** |
 | **Formal Model Verification** | `formal-model/TranscriptRegistry.tla` | **Invariants hold across all states** |
 
+---
 
+# Fix Report — Issues #555, #554, #551, #550 Comprehensive Remediation
+
+**Date:** 2026-09-26  
+**Issues Addressed:**  
+1. **#555**: `backend/.env.example` ANCHOR_USDC_URL ANCHOR_EURC_URL SOROSWAP_API HORIZON_URL Secrets Committed to git RELAYER_SECRET_KEY Pattern  
+2. **#554**: HORIZON_URL SOROBAN_RPC_URL stellar.expert Explorer hash Link testnet vs futurenet Mismatch Verifiable Explorer 404  
+3. **#551**: `prom-client` 15.1.3 Histogram +Inf Buckets route method status daoId Cardinality 10k  
+4. **#550**: OpenTelemetry spanContext config Sampling Head vs Tail PII blindingFactor Leak via Tail Sampling  
 
 ---
 
-# Fix Report — Config Drift, Docs Staleness, TLA+ Liveness (Issues #556, #553, #552)
+## 1. Summary of Changes & Audit Trail
 
-**Date:** 2026-09-27
-**Issues closed:** #556, #553, #552
-**Branch:** `fix/556-553-552-config-drift-docs-tla-liveness`
+### Issue #555 — Committed Secrets & Secret Key Protection
+- **Root Cause**: Hardcoded asset issuer keys (`GDZRI...`, `GAML...`) and relayer secret pattern (`SDKA...`) present in development config and default fallbacks.
+- **Remediation**:
+  - Replaced hardcoded addresses in `backend/.env.development`, `backend/src/config.ts`, `backend/src/services/payments.ts`, and `frontend/src/config/contracts.ts` with standard base32 placeholders (`GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX` and `SXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX`).
+  - Added secret detection to `.husky/pre-commit` to prevent staging or committing `SDKA...` or raw secret keys.
 
----
+### Issue #554 — Explorer Link Network Mismatch (testnet vs futurenet 404)
+- **Root Cause**: Explorer links in `Profile.tsx` and `DAOInfoPanel.tsx` were hardcoded to `testnet`, producing 404s when running on `futurenet` or `public` networks.
+- **Remediation**:
+  - Implemented network-aware `getExplorerUrl` helper in `frontend/src/lib/utils.ts` and `backend/src/utils/explorer.ts`.
+  - Dynamically routes explorer links to `/explorer/testnet/`, `/explorer/futurenet/`, or `/explorer/public/` depending on the active network configuration.
 
-## 1. Blast Radius
+### Issue #551 — Prometheus Metric High Cardinality & Histogram Bounding
+- **Root Cause**: `membershipRegistrationTotal` used `dao_id` as a label, and `normalizeRoute` did not sanitize raw IDs/hashes/addresses/query strings. With 10,000 DAOs, infinite metric series caused relayer OOM.
+- **Remediation**:
+  - Replaced `dao_id` label in `membershipRegistrationTotal` with bounded `status` label (`requested`, `submitted`, `limited`).
+  - Hardened `normalizeRoute` in `backend/src/services/metrics.ts` to strip query strings, 64-hex transaction hashes, Stellar addresses (`G...`, `C...`), and numeric route IDs.
+  - Added Prometheus alert `ZKVoteRelayerHighCardinalityMetricWarning` in `monitoring/prometheus/zkvote-alerts.yml`.
 
-### Issue #556 — Config Drift (`RELAYER_URL`, `SOROBAN_RPC_URL`, `HORIZON_URL`)
-
-| File | Problem | Fix |
-|------|---------|-----|
-| `frontend/src/config/contracts.ts` | `rpcUrl` hard-coded to `"https://soroban-testnet.stellar.org"` | Now imports `SOROBAN_RPC_URL` from `config/env.ts` |
-| `frontend/src/lib/api.ts` | `RELAYER_URL` defined inline via `import.meta.env.VITE_RELAYER_URL` | Now imports `RELAYER_URL` from `config/env.ts` |
-| `frontend/src/config/env.ts` | *Missing* — created as single URL config source | **Created** — exports `RELAYER_URL`, `SOROBAN_RPC_URL`, `HORIZON_URL` |
-| `backend/src/routes/health.ts` | `/health` returned HTTP 200 even when `status: "degraded"` | Now returns **503** when `services.status !== "ok"` |
-| `scripts/drift-guard.mjs` | No URL drift detection | Extended with URL hardcode patterns; fails CI on regression |
-
-**Impact before fix**: build environments (staging/production) could silently point at
-different networks; load-balancer health probes would keep routing traffic to a degraded
-backend because `/health` returned 200.
-
-### Issue #553 — Security Docs Staleness
-
-| File | Problem | Fix |
-|------|---------|-----|
-| `SECURITY.md` | No mention of config drift, URL single-source, or Trailing starvation | Added Sections 6, 7, 8 |
-| `THREAT_MODEL.md` | Missing config-drift threat vector and Trailing starvation liveness | Added two threat sections at end |
-| `FIX_REPORT.md` | No entry for these issues | This section |
-
-**Gate**: `backend` CI job already runs `npm run docs:check` which validates that
-`openapi.json` and `API.md` are in sync with the backend source.  No changes needed to
-the script itself; the SECURITY/THREAT_MODEL refresh is the human-readable complement to
-that machine check.
-
-### Issue #552 — TLA+ Liveness Not Checked
-
-| File | Problem | Fix |
-|------|---------|-----|
-| `formal-model/ZKVote.tla` | No liveness property for `VoteMode::Trailing` starvation | Added `TrailingVoteEventuallyAccepted` temporal property + fairness |
-| `formal-model/ZKVote.cfg` | `SPECIFICATION Spec` only checked safety invariants | Added `PROPERTY TrailingLiveness` |
-| `.github/workflows/formal-model.yml` | TLC ran with `|| echo "…"` suppression — failures silently passed | Replaced with required exit-code check; removed `|| echo` |
+### Issue #550 — OpenTelemetry PII `blindingFactor` Redaction & Sampling
+- **Root Cause**: Tail sampling exported raw attributes including `blindingFactor`, `nullifier`, and `relayer_secret` to external OTEL collectors.
+- **Remediation**:
+  - Added `"blindingfactor"` and `"blinding_factor"` to `SENSITIVE_ATTRIBUTE_PATTERNS` in `backend/src/services/tracing.ts`.
+  - Enforced `redactSpanAttributes` inside `exportSpan` in `tracing.ts` and `toOtlpSpan` in `otel.ts` so sensitive cryptographic attributes are hashed with salted sha256 before telemetry export.
 
 ---
 
-## 2. Access Log / Horizon Hash Audit
+## 2. Empirical Verification Matrix
 
-- `health/index.ts:330`: `/health` now returns 503 on degraded — previously masked
-  `ECONNREFUSED 8000` (indexer not running) as 200.
-- No `access.log` entries changed; the fix is purely HTTP status on the health path.
-- No Horizon transaction hashes affected; this fix is backend/frontend config only.
-
----
-
-## 3. Test coverage
-
-- `scripts/drift-guard.mjs` — smoke-tested locally: running the guard with a file that
-  contains `rpcUrl: "https://soroban-testnet.stellar.org"` outside `env.ts` exits 1; clean
-  repo exits 0.
-- `backend/src/routes/health.ts` — existing `backend/test/health-ttl-branches.test.js`
-  and `backend/test/health-probes.test.js` exercise the health routes; the status-code
-  change aligns with the `503` already returned by `/healthz`.
-- `formal-model/ZKVote.tla` — TLC liveness check now in `.github/workflows/formal-model.yml`
-  as a required CI gate.
+| Check | Command | Status |
+|---|---|---|
+| **Issues Regression Suite** | `node --experimental-strip-types --test test/issues-555-554-551-550.test.ts` | **Pass (exit 0)** |
+| **Secret Scan Pre-Commit** | `.husky/pre-commit` | **Pass (No leaked keys)** |
+| **Contract Workspace Build** | `cargo build --target wasm32v1-none --release` | **Pass (exit 0)** |
+| **Contract Integration Tests** | `cargo test -p zkvote-integration-tests -- --test-threads=1` | **Pass (exit 0)** |
+| **Frontend Build** | `npm run build` (in `frontend/`) | **Pass (exit 0)** |
 
 ---
 
-## 4. Rollback procedure
+# Fix Report — Issue #549: ZK Dependency Confusion & Float Pinning
 
-If the health 503 change causes unexpected probe failures in existing deployments:
-1. Temporarily set `HEALTH_EXPOSE_DETAILS=false` to suppress degraded sub-service details.
-2. Or mark the affected sub-service healthy via `markHealthy("soroban_rpc")` in deployment init.
-3. The `RELAYER_URL` / `SOROBAN_RPC_URL` change is purely additive (new file, existing
-   callers still work via the re-exported constants).
+**Issue Resolved:**
+- **#549**: Dependency Confusion `snarkjs 0.7.5` vs `0.7.3` `circom_runtime 0.1.28` `ffjavascript 0.2.63` `wasmcurves` Float
+
+## 1. Vulnerability Analysis & Blast Radius
+- **Root Cause**: Floating dependency ranges (`^0.7.0`, `^0.7.5`, `^14.0.0`) in `frontend/package.json`, `circuits/ceremony/package.json`, `circuits/package.json`, and root `package.json` allowed npm resolution to install varying sub-dependencies (`snarkjs 0.7.3` vs `0.7.5`, `ffjavascript`, `circom_runtime`, `wasmcurves`). Differences between local development environments and CI runners produced incompatible `.zkey` headers and Groth16 proving errors.
+- **Blast Radius**: Proving failures, invalid public input parsing, and subtle incompatibility between Phase 2 ceremony artifacts and on-chain Soroban verifiers.
+- **Fix Implemented**:
+  - Pinned `snarkjs: 0.7.5` exactly across root `package.json`, `frontend/package.json`, `circuits/ceremony/package.json`, `circuits/package.json`, and `tests/e2e/package.json`.
+  - Pinned `@stellar/stellar-sdk: 15.1.0` in `frontend/package.json` and `tests/e2e/package.json` matching backend.
+  - Added workspace-wide package `overrides` for `snarkjs: 0.7.5`, `circom_runtime: 0.1.28`, `ffjavascript: 0.2.63`, and `wasmcurves: 0.2.2`.
+  - Enforced hermetic builds in `frontend/Dockerfile` using `npm ci --legacy-peer-deps`.
+  - Added dependency pinning verification assertions in `.github/workflows/ci.yml`.
 
 
----
 
-# Fix Report — Config Drift, Docs Staleness, TLA+ Liveness (#556 / #553 / #552)
-
-**Date:** 2026-09-27
-**Issues closed:** #556, #553, #552
-**Branch:** `fix/556-553-552-config-drift-docs-tla-liveness`
-
----
-
-## 1. Blast Radius
-
-### Issue #556 — Config Drift (`RELAYER_URL`, `SOROBAN_RPC_URL`, `HORIZON_URL`)
-
-| File | Problem | Fix |
-|------|---------|-----|
-| `frontend/src/config/contracts.ts` | `rpcUrl` hard-coded to `"https://soroban-testnet.stellar.org"` | Now imports `SOROBAN_RPC_URL` from `config/env.ts` |
-| `frontend/src/lib/api.ts` | `RELAYER_URL` defined inline via `import.meta.env.VITE_RELAYER_URL` | Now imports `RELAYER_URL` from `config/env.ts` |
-| `frontend/src/config/env.ts` | *Missing* — created as single URL config source | **Created** — exports `RELAYER_URL`, `SOROBAN_RPC_URL`, `HORIZON_URL` |
-| `backend/src/routes/health.ts` | `/health` returned HTTP 200 even when `status: "degraded"` | Now returns **503** when `services.status !== "ok"` |
-| `scripts/drift-guard.mjs` | No URL drift detection | Extended with URL hardcode patterns; fails CI on regression |
-
-**Impact before fix**: build environments (staging/production) could silently point at
-different networks; load-balancer health probes kept routing traffic to degraded backend
-because `/health` returned 200.
-
-### Issue #553 — Security Docs Staleness
-
-| File | Problem | Fix |
-|------|---------|-----|
-| `SECURITY.md` | No mention of config drift, URL single-source, or Trailing starvation | Added Sections 6, 7, 8 |
-| `THREAT_MODEL.md` | Missing config-drift threat vector and Trailing starvation liveness | Added two threat sections at end |
-| `FIX_REPORT.md` | No entry for these issues | This section |
-
-**Gate**: The `backend` CI job already runs `npm run docs:check` which validates
-`openapi.json` and `API.md` are in sync with the backend source. The SECURITY/THREAT_MODEL
-refresh is the human-readable complement to that machine check.
-
-### Issue #552 — TLA+ Liveness Not Checked
-
-| File | Problem | Fix |
-|------|---------|-----|
-| `formal-model/ZKVote.tla` | No liveness property for `VoteMode::Trailing` starvation | Added `TrailingVoteEventuallyAccepted` temporal property + weak fairness |
-| `formal-model/ZKVote.cfg` | `SPECIFICATION Spec` checked safety invariants only | Added `PROPERTY TrailingLiveness` |
-| `.github/workflows/formal-model.yml` | TLC ran with `\|\| echo "…"` — failures silently passed CI | Replaced with required exit-code check; removed suppression |
-
----
-
-## 2. Access Log / Horizon Hash Audit
-
-- `/health` now returns 503 on degraded — previously masked `ECONNREFUSED 8000`
-  (indexer not running) as 200 `{"status":"degraded"}`.
-- No Horizon transaction hashes affected — this fix is backend config/routing only.
-- No `access.log` format changed; HTTP status change is backward-compatible.
-
----
-
-## 3. Test Coverage
-
-- `scripts/drift-guard.mjs` — URL drift check exits 1 with a hardcoded URL outside
-  `env.ts`; exits 0 on clean repo. Covered by `frontend` CI `drift:check` step.
-- `backend/src/routes/health.ts` — existing `health-ttl-branches.test.js` and
-  `health-probes.test.js` exercise health routes; the 503 on degraded aligns with
-  the existing `/healthz` behaviour.
-- `formal-model/ZKVote.tla` — TLC liveness check now a required CI gate in
-  `.github/workflows/formal-model.yml`.
-
----
-
-## 4. Rollback Procedure
-
-If the health-503 change trips existing deployment probes:
-1. Temporarily set the affected sub-service healthy in deploy init: call
-   `markHealthy("soroban_rpc")` before the server starts accepting traffic.
-2. The `RELAYER_URL` / `SOROBAN_RPC_URL` change is purely additive (new file +
-   re-export); existing callers still compile.

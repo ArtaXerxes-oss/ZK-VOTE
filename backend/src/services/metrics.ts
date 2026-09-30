@@ -102,7 +102,7 @@ export const coalescingWaitTime = new Histogram({
 export const membershipRegistrationTotal = new Counter({
   name: "zkvote_membership_registration_requests_total",
   help: "Total commitment registration requests served by the membership route",
-  labelNames: ["dao_id"] as const,
+  labelNames: ["status"] as const,
   registers: [register],
 });
 
@@ -508,6 +508,27 @@ export const wsMessagesSent = new Counter({
   registers: [register],
 });
 
+export const wsAuthDuration = new Histogram({
+  name: "zkvote_ws_auth_duration_seconds",
+  help: "WebSocket authentication/handshake duration in seconds",
+  buckets: [0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1],
+  registers: [register],
+});
+
+export const wsMessageDuration = new Histogram({
+  name: "zkvote_ws_message_duration_seconds",
+  help: "WebSocket message processing duration in seconds",
+  buckets: [0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1],
+  registers: [register],
+});
+
+export const wsRateLimitTotal = new Counter({
+  name: "zkvote_ws_rate_limit_total",
+  help: "Total WebSocket connections blocked by rate limiting",
+  labelNames: ["ip"] as const,
+  registers: [register],
+});
+
 // ============================================
 // RELAYER KEY ROTATION METRICS (#177)
 // ============================================
@@ -515,7 +536,7 @@ export const wsMessagesSent = new Counter({
 export const relayerKeyBalance = new Gauge({
   name: "zkvote_relayer_key_balance_xlm",
   help: "Current balance of relayer keys in XLM",
-  labelNames: ["key_id", "public_key", "role"] as const,
+  labelNames: ["key_id", "role"] as const,
   registers: [register],
 });
 
@@ -529,14 +550,14 @@ export const relayerKeyRotationsTotal = new Counter({
 export const relayerKeyAgeSeconds = new Gauge({
   name: "zkvote_relayer_key_age_seconds",
   help: "Age of relayer key in seconds since activation",
-  labelNames: ["key_id", "public_key"] as const,
+  labelNames: ["key_id"] as const,
   registers: [register],
 });
 
 export const relayerKeyTransactionsTotal = new Counter({
   name: "zkvote_relayer_key_transactions_total",
   help: "Total transactions signed by relayer key",
-  labelNames: ["key_id", "public_key"] as const,
+  labelNames: ["key_id"] as const,
   registers: [register],
 });
 
@@ -546,16 +567,24 @@ export const relayerKeyTransactionsTotal = new Counter({
 
 /**
  * Normalise Express route path to a low-cardinality label.
- * Strips parameter values (e.g. /dao/123 -> /dao/:daoId)
+ * Strips parameter values, hashes, addresses, and query strings.
  */
 export function normalizeRoute(path: string): string {
   if (!path) return "unknown";
 
-  return path
-    .replace(/\/[0-9a-f]{20,}/g, "/:hash")
+  const cleanPath = path.split("?")[0];
+
+  return cleanPath
+    .replace(/\/[0-9a-f]{20,}/gi, "/:hash")
+    .replace(/\/[CG][A-Z2-7]{55}/g, "/:address")
+    .replace(/\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, "/:uuid")
     .replace(
-      /\/(dao|proposal|comment|events|bridge|circuits|ipfs)\/[^/]+/g,
+      /\/(dao|proposal|comment|comments|events|bridge|circuits|ipfs|membership|claim|pay|swap|ramp|nullifier|root|root-history|vote|threshold|randomness)\/[^/]+/gi,
       "/$1/:param",
+    )
+    .replace(
+      /\/(proposal|nullifier|root-history|comments|comment|threshold)\/[^/]+\/[^/]+/gi,
+      "/$1/:param/:id2",
     )
     .replace(/\/(root|daos|ready|health|config|metrics|db)(\/|$)/g, "/$1$2");
 }
@@ -623,6 +652,69 @@ export const batch_partial_failure_total = new Counter({
 });
 
 // ============================================
+// COST-BASED RATE LIMITING METRICS (#525)
+// ============================================
+
+export const paymentOpsPerMinute = new Histogram({
+  name: "zkvote_payment_ops_per_minute",
+  help: "Histogram of payment operations per minute per IP",
+  buckets: [1, 5, 10, 25, 50, 100],
+  registers: [register],
+});
+
+export const costRateLimitExceeded = new Counter({
+  name: "zkvote_cost_rate_limit_exceeded_total",
+  help: "Total cost-based rate limit violations",
+  labelNames: ["limiter", "cost"] as const,
+  registers: [register],
+});
+
+// ============================================
+// BACKUP ENCRYPTION METRICS (#524)
+// ============================================
+
+export const backupAge = new Gauge({
+  name: "zkvote_backup_age_seconds",
+  help: "Age of the most recent backup in seconds",
+  registers: [register],
+});
+
+export const backupTamperDetected = new Counter({
+  name: "zkvote_backup_tamper_detected_total",
+  help: "Total number of tampered backup restore attempts detected",
+  labelNames: ["keyId"] as const,
+  registers: [register],
+});
+
+export const backupRestoreSuccess = new Counter({
+  name: "zkvote_backup_restore_success_total",
+  help: "Total successful backup restore operations",
+  labelNames: ["keyId"] as const,
+  registers: [register],
+});
+
+export const backupRestoreFailed = new Counter({
+  name: "zkvote_backup_restore_failed_total",
+  help: "Total failed backup restore attempts",
+  labelNames: ["reason"] as const,
+  registers: [register],
+});
+
+export const backupEncryptionDuration = new Histogram({
+  name: "zkvote_backup_encryption_duration_seconds",
+  help: "Backup encryption operation duration in seconds",
+  buckets: [0.1, 0.5, 1, 2.5, 5, 10, 30, 60],
+  registers: [register],
+});
+
+export const backupDecryptionDuration = new Histogram({
+  name: "zkvote_backup_decryption_duration_seconds",
+  help: "Backup decryption operation duration in seconds",
+  buckets: [0.1, 0.5, 1, 2.5, 5, 10, 30, 60],
+  registers: [register],
+});
+
+// ============================================
 // DAO END-TO-END RECONCILIATION METRICS (#577)
 // ============================================
 
@@ -639,31 +731,20 @@ export const daoReconciliationLastOk = new Gauge({
   registers: [register],
 });
 
-
 // ============================================
-// CONFIG DRIFT & HEALTH METRICS (#556)
+// OFFLINE RETRY & CDC OUTBOX LAG METRICS (#542, #544)
 // ============================================
 
-/**
- * Incremented once at startup if any known config drift pattern is detected
- * (e.g. a URL imported outside the canonical config/env.ts).  A non-zero
- * value should trigger a Grafana alert so the operator corrects the drift
- * before it causes a silent network mismatch in production.
- */
-export const configDriftDetected = new Counter({
-  name: "zkvote_config_drift_detected_total",
-  help: "Number of config drift violations detected at startup (URL or env mismatch)",
-  labelNames: ["drift_type"] as const,
+export const offlineRetryTotal = new Counter({
+  name: "zkvote_offline_retry_total",
+  help: "Total offline retry attempts processed from client queue",
+  labelNames: ["type", "status"] as const,
   registers: [register],
 });
 
-/**
- * Current HTTP status code last returned by /health.
- * 200 = healthy, 503 = degraded.  Grafana alert: value > 200.
- */
-export const healthEndpointStatus = new Gauge({
-  name: "zkvote_health_endpoint_status",
-  help: "Last HTTP status code returned by GET /health (200=ok, 503=degraded)",
+export const outboxLagGauge = new Gauge({
+  name: "zkvote_outbox_lag_seconds",
+  help: "Outbox pattern CDC WAL replication lag in seconds",
+  labelNames: ["channel"] as const,
   registers: [register],
 });
-

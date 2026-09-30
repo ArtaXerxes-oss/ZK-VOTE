@@ -74,6 +74,13 @@ template Vote(levels) {
     // 3. Compute nullifier: Poseidon(secret, daoId, proposalId)
     // Domain separation: includes daoId to prevent cross-DAO nullifier linkability
     // This ensures a voter can't be linked across DAOs even if reusing the same secret
+    //
+    // TODO(#531): Add epoch parameter to prevent nullifier collision when daoId is reused
+    // after DAO deletion/recreation. Current formula assumes daoId never repeats.
+    // Proposed fix: Poseidon(secret, daoId, epoch, proposalId) with epoch incremented
+    // on DAO recreation. This is a BREAKING CHANGE requiring circuit recompilation,
+    // new trusted setup, and contract migration. See ISSUE_531_NULLIFIER_EPOCH_ANALYSIS.md
+    // for detailed migration strategy.
     component nullifierHasher = Poseidon(3);
     nullifierHasher.inputs[0] <== secret;
     nullifierHasher.inputs[1] <== daoId;
@@ -89,4 +96,22 @@ template Vote(levels) {
     validChoice.in[0] <== voteChoice;
     validChoice.in[1] <== numCandidates;
     validChoice.out === 1;
+
+    // 5. Bind proof to relayer address (anti-front-running)
+    // NOTE: This constraint ensures relayerAddress is bound into the proof,
+    // but the contract MUST verify that msg.sender/env.invoker() matches
+    // the relayerAddress public input for this to provide front-running protection.
+    // Without contract-side validation, this binding is ineffective.
+    component relayerHasher = Poseidon(5);
+    relayerHasher.inputs[0] <== secret;
+    relayerHasher.inputs[1] <== daoId;
+    relayerHasher.inputs[2] <== proposalId;
+    relayerHasher.inputs[3] <== voteChoice;
+    relayerHasher.inputs[4] <== relayerAddress;
+    signal relayerBinding;
+    relayerBinding <== relayerHasher.out;
+    // The relayerBinding is computed and constrained (ensures relayerAddress
+    // participates in the proof) but not exposed as public output to maintain
+    // privacy. The contract should reject proofs where relayerAddress doesn't
+    // match the actual transaction sender.
 }

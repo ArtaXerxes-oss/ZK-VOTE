@@ -14,18 +14,15 @@ export const CONTRACTS = {
   VOTING_ID: "CCYGWEUNWOBHJ6JIHDMTK2XSSDVMQ7ZGBJQE6QR2VYD4FRQGZR5EYKJ2",
   COMMENTS_ID: "CCUZNVADC24GEOPRD5A6PBCZGOQ6QOKJU6E5UBXI6RKDC7AWN5ATXNFF",
   // Treasury holds USDC/EURC for high-volume payouts (real, no mocks)
-  TREASURY_ID:
-    (import.meta.env.VITE_TREASURY_CONTRACT_ID as string) ||
-    "CTREASURYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY",
-  // Thin rewards crate (Vote-to-Earn) — generated via REWARDS_CONTRACT_ID env or fallback mock for tests
-  REWARDS_ID:
-    (import.meta.env.VITE_REWARDS_CONTRACT_ID as string) ||
-    "CRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR",
+  // Empty when unset — placeholder C… strings are rejected by guardrails (#646)
+  TREASURY_ID: (import.meta.env.VITE_TREASURY_CONTRACT_ID as string) || "",
+  // Thin rewards crate (Vote-to-Earn)
+  REWARDS_ID: (import.meta.env.VITE_REWARDS_CONTRACT_ID as string) || "",
 } as const;
 
 export const ASSET_ISSUERS = {
-  USDC: (import.meta.env.VITE_USDC_ISSUER as string) || "GDZRIUTGHMQNRPGPB5JJYX6DCWKEZ3NDJNNB455VTMP7ZZAVDDXTCGQO",
-  EURC: (import.meta.env.VITE_EURC_ISSUER as string) || "GAML6VH2XIYLO23TT3G5ANIBDNZJCMBWYLN3OOUMTL42NF467AIXAU6F",
+  USDC: (import.meta.env.VITE_USDC_ISSUER as string) || "GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+  EURC: (import.meta.env.VITE_EURC_ISSUER as string) || "GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
 } as const;
 
 export const NETWORK_CONFIG = {

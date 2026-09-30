@@ -1,6 +1,7 @@
 # Security Policy and Cryptographic Architecture
 
 ## 1. Vulnerability Reporting
+
 If you discover a security vulnerability within ZKVote, please report it privately to security@zkvote.io or through GitHub Private Vulnerability Reporting. Do NOT open public issues for zero-day vulnerabilities.
 
 ---
@@ -8,14 +9,18 @@ If you discover a security vulnerability within ZKVote, please report it private
 ## 2. Groth16 MPC Phase 2 Ceremony & Toxic Waste Elimination
 
 ### The Single-Party Setup Risk
+
 Groth16 zk-SNARKs rely on structured reference strings (SRS) generated during a multi-stage trusted setup. The setup decomposes into:
+
 1. **Phase 1 (Powers of Tau)**: Universal reference string generation independent of specific circuits.
 2. **Phase 2 (Circuit-Specific Setup)**: Generation of circuit-specific evaluation keys ($A, B, C$) evaluated at secret points $\tau, \alpha, \beta, \gamma, \delta$.
 
 If a single party evaluates the Phase 2 setup on a single machine ("single-laptop setup"), retention of the secret trapdoors $\tau$ ("toxic waste") allows that party to forge valid Groth16 proofs for arbitrary statements—such as proving membership in a 262,144-leaf Merkle tree without possessing a valid private key or commitment.
 
 ### Multi-Party Ceremony Requirement
+
 To eliminate this risk, ZKVote mandates an authenticated multi-party computation (MPC) ceremony for all production circuits:
+
 - **Minimum Contributors**: $\ge 3$ distinct independent contributors (`MIN_MPC_CONTRIBUTORS = 3`).
 - **Cryptographic Hash Chain**: Each contributor receives contribution $i-1$, verifies its parameters, injects fresh cryptographically secure entropy, and outputs contribution $i$. The file hash of contribution $i$ is linked to contribution $i-1$.
 - **Random Public Beacon**: The final parameters are randomized with an unpredictable public beacon (e.g. Bitcoin block hash or drand randomness beacon) with 10 iterations of repeated SHA-256 hashing.
@@ -47,6 +52,7 @@ Alice (c1) -> Bob (c2) -> Charlie (c3) -> Random Beacon -> Final zkey & VK
 ```
 
 ### Verification Invariants
+
 1. **`UnattestedVKNeverActive`**: No VK can be used to initialize or vote on a proposal unless it has been attested in `TranscriptRegistry`.
 2. **`MinContributorsEnforced`**: Transcripts with fewer than 3 independent contributors cannot be attested.
 3. **`ProposalVKSnapshot`**: When a proposal is created, the VK hash is immutable for that proposal's lifecycle, preventing mid-election substitution.
@@ -69,58 +75,64 @@ Alice (c1) -> Bob (c2) -> Charlie (c3) -> Random Beacon -> Final zkey & VK
 
 ---
 
-## 6. Config Drift & Service URL Security (Issue #556 / #553)
+## 6. Secret Hygiene & Database Security (Issue #535)
 
-**Problem:** Three service URLs (`RELAYER_URL`, `SOROBAN_RPC_URL`, `HORIZON_URL`) were
-defined in at least two places (hardcoded in `frontend/src/config/contracts.ts` and
-inline in `frontend/src/lib/api.ts`), creating a drift vector where a build can silently
-point at the wrong network.
+### Never Commit Secrets or Database Files
 
-**Fix applied:**
+**Critical Rule**: Never commit the following to version control:
 
-- `frontend/src/config/env.ts` is now the **single source of truth** for all three URLs.
-  All other files import from there; no other file calls `import.meta.env.VITE_*` for
-  these three variables.
-- `scripts/drift-guard.mjs` was extended to **fail CI** if a hardcoded URL pattern is
-  found outside `config/env.ts`.
-- The `/health` endpoint now returns **HTTP 503** (not 200) when any monitored service is
-  in `degraded` or `unavailable` state so that load-balancer health probes stop routing
-  traffic to a degraded backend instance.
+- **Secret Keys**: `RELAYER_SECRET_KEY`, Stellar seed keys (`SDKA...`), API tokens, or private keys
+- **Database Files**: `*.db`, `*.db-wal`, `*.db-shm` files containing production or development data
+- **Backup Keys**: Files in `backend/data/backup-keys/` or `backend/data/backups/`
+- **Environment Files**: `.env` files with real credentials (use `.env.example` templates only)
 
-**Drift gate:** The `frontend` CI job runs `npm run drift:check` which invokes
-`drift-guard.mjs`; any regression re-introducing a hardcoded URL will fail the PR.
+### Pre-Commit Hook Protection
 
----
+The `.husky/pre-commit` hook automatically blocks commits containing:
 
-## 7. Pinned Dependency Versions (Issue #556 / #553)
+1. Secret key patterns matching Stellar seeds (`SDKA[A-Z0-9]{52}`)
+2. Database files (`*.db`, `*.db-wal`, `*.db-shm`)
+3. Hardcoded `RELAYER_SECRET_KEY` values
 
-All security-critical dependencies are pinned to exact versions in the respective
-`package.json` files to prevent supply-chain drift:
+### Database Backup Strategy
 
-| Package | Pinned version | Location |
-|---------|---------------|----------|
-| `@stellar/stellar-sdk` | `15.1.0` | `backend/package.json` |
-| `snarkjs` | `0.7.5` | `circuits/package.json` |
-| `prom-client` | `15.1.3` | `backend/package.json` |
+Use **Litestream** for continuous WAL-based replication to S3-compatible storage:
 
-The `wasm32v1-none` toolchain target is fixed via `rust-toolchain.toml` at the repo root.
+```yaml
+# backend/litestream.yml
+dbs:
+  - path: ./data/zkvote.db
+    replicas:
+      - type: s3
+        bucket: ${LITESTREAM_S3_BUCKET}
+        sync-interval: 1s
+        retention: 720h
+        snapshot-interval: 24h
+```
 
----
+**Never commit `data/zkvote.db` to git.** Use Litestream or database dump scripts for backups.
 
-## 8. Liveness & Starvation — Formal Model (Issue #552)
+### Secret Key Rotation
 
-`VoteMode::Trailing` proposals accept any root whose index is `≥ earliest_root_idx` and
-`≥ minValidRootIdx`. A member removed after the proposal was created can therefore be
-evicted from the root history before they cast their vote, starving them of a valid root.
+If secrets are accidentally committed:
 
-**Model:** `formal-model/ZKVote.tla` now includes a weak-fairness liveness property
-`TrailingVoteEventuallyAccepted` which asserts that any member with a valid root
-eventually casts a vote (or the proposal closes). TLC is run in CI as a **required** gate
-(no `|| true` suppression) against this property.
+1. **Immediate Rotation**: Rotate all exposed keys using `backend/src/rotate-tokens.sh`
+2. **History Purge**: Use `git-filter-repo` to remove secrets from git history:
+   ```bash
+   git filter-repo --path backend/data/zkvote.db --invert-paths
+   git filter-repo --replace-text <(echo "SDKA[REDACTED-SECRET-KEY]")
+   ```
+3. **Force Push**: After purging, force-push to remote (coordinate with team)
+4. **Invalidate Old Keys**: Revoke/invalidate the compromised keys on Stellar network if necessary
 
-See `formal-model/ZKVote.tla` and `.github/workflows/formal-model.yml` for details.
+### Type Generation from Migrations (Not Database)
 
----
+Generate `db-types.ts` from migration files, not from live database:
 
-*Last updated: 2026-09-27 — reflects 391-test suite (cargo test --workspace), config-drift
-fix (#556), docs-staleness fix (#553), and TLA+ liveness gate (#552).*
+```bash
+# Generate fresh database from migrations for type extraction
+npm run migrate:up
+npm run db:generate-types
+```
+
+This ensures type definitions match the migration schema, not runtime data.
