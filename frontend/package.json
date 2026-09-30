@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "type": "module",
     "scripts": {
-    "sync:circuits": "mkdir -p public/circuits/comment && [ -f ../circuits/build/vote_js/vote.wasm ] && cp ../circuits/build/vote_js/vote.wasm public/circuits/vote.wasm; [ -f ../circuits/build/comment_js/comment.wasm ] && cp ../circuits/build/comment_js/comment.wasm public/circuits/comment/comment.wasm; echo 'circuits synced'",
+    "sync:circuits": "node scripts/sync-circuits.mjs",
     "predev": "npm run sync:circuits",
     "dev": "vite",
     "prebuild": "npm run sync:circuits",

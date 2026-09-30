@@ -905,6 +905,8 @@ export const bridgeVoteSchema = z.object({
   sbtContractAddr: z.string().regex(/^0x[0-9a-fA-F]{1,64}$/),
   /** Field element encoding of the member address (public signal 1) */
   memberAddr: z.string().regex(/^0x[0-9a-fA-F]{1,64}$/),
+  /** EVM chain id bound into the bridge proof (#649) */
+  chainId: z.union([z.number().int().positive(), z.string().regex(/^[0-9]+$/)]),
   proof: z.object({
     a: z.string().regex(/^0x[0-9a-fA-F]{128}$/),
     b: z.string().regex(/^0x[0-9a-fA-F]{256}$/),

@@ -140,6 +140,8 @@ export class ZkVoteClient {
     voteMode: "Fixed" | "Trailing";
     eligibleRoot: bigint;
     vkVersion?: number | null;
+    /** Bound into circuit public signals; defaults to 2 for binary ballots (#645) */
+    numCandidates?: number;
   }): Promise<{ txHash: string; queued?: boolean }> {
     if (!this.publicKey) throw new Error("publicKey required for voting");
 
@@ -232,6 +234,7 @@ export class ZkVoteClient {
       daoId: params.daoId.toString(),
       proposalId: params.proposalId.toString(),
       voteChoice: params.choice ? "1" : "0",
+      numCandidates: (params.numCandidates ?? 2).toString(),
       relayerAddress: "0",
       commitment,
       pathElements,

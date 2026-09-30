@@ -149,6 +149,37 @@ const services = buildAppServices();
 
 const app: Express = express();
 
+const isProduction = process.env.NODE_ENV === "production";
+
+// Security: CORS configuration
+function parseCorsOrigins(value: string | string[]): string[] {
+  if (Array.isArray(value)) return value;
+  return value
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+}
+
+const allowedCorsOrigins = parseCorsOrigins(config.corsOrigins as unknown as string | string[]);
+
+if (allowedCorsOrigins.length === 0) {
+  throw new Error("CORS_ORIGIN must specify at least one origin");
+}
+
+if (isProduction && allowedCorsOrigins.includes("*")) {
+  throw new Error(
+    "CORS_ORIGIN must not be '*' in production; configure exact origins",
+  );
+}
+
+for (const origin of allowedCorsOrigins) {
+  if (origin !== "*" && /[*?]/.test(origin)) {
+    throw new Error(
+      "CORS_ORIGIN origins must be exact URLs, not wildcard patterns",
+    );
+  }
+}
+
 // Security: HTTP headers with CSP
 // This is a pure JSON API (no HTML is served outside /api-docs), so the CSP
 // defaults everything to 'none' and only opens the handful of directives
@@ -228,35 +259,6 @@ app.use(metricsMiddleware);
 // Request-scoped degradation tracking (#204)
 app.use(degradationContext);
 
-// Security: CORS configuration
-function parseCorsOrigins(value: string | string[]): string[] {
-  if (Array.isArray(value)) return value;
-  return value
-    .split(",")
-    .map((origin) => origin.trim())
-    .filter(Boolean);
-}
-
-const allowedCorsOrigins = parseCorsOrigins(config.corsOrigins as unknown as string | string[]);
-const isProduction = process.env.NODE_ENV === "production";
-
-if (allowedCorsOrigins.length === 0) {
-  throw new Error("CORS_ORIGIN must specify at least one origin");
-}
-
-if (isProduction && allowedCorsOrigins.includes("*")) {
-  throw new Error(
-    "CORS_ORIGIN must not be '*' in production; configure exact origins",
-  );
-}
-
-for (const origin of allowedCorsOrigins) {
-  if (origin !== "*" && /[*?]/.test(origin)) {
-    throw new Error(
-      "CORS_ORIGIN origins must be exact URLs, not wildcard patterns",
-    );
-  }
-}
 
 const allowAllCors = !isProduction && allowedCorsOrigins.includes("*");
 
