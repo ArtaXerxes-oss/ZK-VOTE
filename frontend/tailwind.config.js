@@ -1,6 +1,6 @@
 /** @type {import('tailwindcss').Config} */
 export default {
-  darkMode: 'class',
+  darkMode: "class",
   content: [
     "./index.html",
     "./src/**/*.{ts,tsx}",
@@ -87,5 +87,26 @@ export default {
       },
     },
   },
-  plugins: [require("tailwindcss-animate"), require("@tailwindcss/typography")],
-}
+  plugins: [
+    require("tailwindcss-animate"),
+    require("@tailwindcss/typography"),
+    // RTL logical properties plugin
+    function ({ addUtilities }) {
+      const newUtilities = {
+        ".ms-auto": { "margin-inline-start": "auto" },
+        ".me-auto": { "margin-inline-end": "auto" },
+        ".ps-safe": { "padding-inline-start": "env(safe-area-inset-left)" },
+        ".pe-safe": { "padding-inline-end": "env(safe-area-inset-right)" },
+        ".border-s": { "border-inline-start-width": "1px" },
+        ".border-e": { "border-inline-end-width": "1px" },
+        ".start-0": { "inset-inline-start": "0" },
+        ".end-0": { "inset-inline-end": "0" },
+        ".text-start": { "text-align": "start" },
+        ".text-end": { "text-align": "end" },
+        ".float-start": { float: "inline-start" },
+        ".float-end": { float: "inline-end" },
+      };
+      addUtilities(newUtilities);
+    },
+  ],
+};

@@ -9,6 +9,8 @@ Scope: current multi-tenant Soroban contracts (registry, membership-sbt, members
 - **Relay (malicious)**: may drop/delay/reorder/alter submissions; holds its own key to sign transactions.
 - **Contract admin (per DAO)**: can set VK, manage membership (via SBT/tree), and create proposals; not trusted with anonymity or vote integrity beyond defined controls.
 - **Chain validators**: assumed honest in execution; P25 host functions enforce cryptography.
+- **Financial abuse actor (NEW - SPIKE-147)**: attempts wash payments, structuring, mule convergence, or rapid cycling through `/pay`, `/pay/batch`, `/ramp` endpoints to launder funds, farm rewards, or evade thresholds. Operates at metadata level (payment timing, amounts, destinations) without accessing vote linkage.
+- **KYC data leakage actor (NEW - SPIKE-146)**: attempts to deanonymize voters by correlating anchor KYC data (from `/ramp` flows) with voting activity. Targets over-collected identity data, verbose anchor responses, or cross-subsystem joins (ramp identity ↔ ballot commitments).
 
 ## What Relays Learn / Can Do
 
