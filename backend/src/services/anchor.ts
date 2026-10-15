@@ -4,6 +4,10 @@
  */
 import { log } from "./logger.js";
 import { canonicalizeStellarAmount } from "../utils/stellarAmount.js";
+import { 
+  minimizeKYCResponse, 
+  enforceMinimizationBoundary 
+} from "./kycBoundary.js";
 
 const ANCHOR_USDC = process.env.ANCHOR_USDC_URL || "https://anchor.circle.com";
 const ANCHOR_EURC =
@@ -40,6 +44,10 @@ export function sanitizeAnchorResponse(
     throw new Error("Anchor returned an invalid response");
   }
   const response = { ...(payload as Record<string, unknown>) };
+  
+  // Enforce KYC boundary: detect excess fields before processing
+  enforceMinimizationBoundary(response);
+  
   const rawInteractiveUrl =
     response.interactive_url ??
     (response.type === "interactive_customer_info_needed"
@@ -53,7 +61,11 @@ export function sanitizeAnchorResponse(
     if (response.type === "interactive_customer_info_needed")
       delete response.url;
   }
-  return response;
+  
+  // Apply data minimization to KYC fields
+  const minimized = minimizeKYCResponse(response);
+  
+  return minimized as Record<string, unknown>;
 }
 
 async function fetchAnchorJson(url: URL): Promise<unknown> {

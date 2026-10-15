@@ -700,6 +700,66 @@ export const daoReconciliationLastOk = new Gauge({
 });
 
 // ============================================
+// ABUSE DETECTION METRICS (SPIKE-147 / #798)
+// ============================================
+
+export const abuseDetectionTotal = new Counter({
+  name: "zkvote_abuse_detection_total",
+  help: "Total abuse pattern detections (structuring, wash payments, mule convergence)",
+  labelNames: ["pattern", "confidence_level"] as const,
+  registers: [register],
+});
+
+export const abusePatternConfidence = new Histogram({
+  name: "zkvote_abuse_pattern_confidence",
+  help: "Confidence score distribution for detected abuse patterns (0.0 to 1.0)",
+  labelNames: ["pattern"] as const,
+  buckets: [0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 1.0],
+  registers: [register],
+});
+
+export const suspiciousPaymentVolume = new Histogram({
+  name: "zkvote_suspicious_payment_volume_stroops",
+  help: "Total payment volume in stroops for transactions flagged as suspicious",
+  labelNames: ["pattern"] as const,
+  buckets: [1e10, 1e11, 1e12, 1e13, 1e14], // 1K to 10M XLM
+  registers: [register],
+});
+
+export const paymentDestinationFanout = new Histogram({
+  name: "zkvote_payment_destination_fanout",
+  help: "Number of unique destinations per payment batch (mule detection signal)",
+  buckets: [1, 2, 5, 10, 20, 50, 100],
+  registers: [register],
+});
+
+// ============================================
+// KYC BOUNDARY METRICS (SPIKE-146 / #797)
+// ============================================
+
+export const kycDataMinimizationTotal = new Counter({
+  name: "zkvote_kyc_data_minimization_total",
+  help: "Total anchor responses processed through KYC data minimization",
+  labelNames: ["status", "has_excess_fields"] as const,
+  registers: [register],
+});
+
+export const kycAccessDenialTotal = new Counter({
+  name: "zkvote_kyc_access_denial_total",
+  help: "Total KYC field access attempts denied due to insufficient access level",
+  labelNames: ["field", "access_level"] as const,
+  registers: [register],
+});
+
+export const kycRetentionPurgeTotal = new Counter({
+  name: "zkvote_kyc_retention_purge_total",
+  help: "Total KYC state records purged based on retention policy",
+  labelNames: ["status"] as const,
+  registers: [register],
+});
+
+
+// ============================================
 // OFFLINE RETRY & CDC OUTBOX LAG METRICS (#542, #544)
 // ============================================
 
