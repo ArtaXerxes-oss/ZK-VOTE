@@ -85,8 +85,19 @@ router.post("/pay", masterKeyGuard, csrfOriginGuard, bodyLimit("5kb"), async (re
   }
 });
 
-import { batch_partial_failure_total } from "../services/metrics.js";
+import {
+  batch_partial_failure_total,
+  abuseDetectionTotal,
+  abusePatternConfidence,
+  suspiciousPaymentVolume,
+  paymentDestinationFanout,
+} from "../services/metrics.js";
 import { payRequestSchema, payBatchRequestSchema } from "../validation/schemas.js";
+import { 
+  analyzeBatchPayment, 
+  recordAbuseDetection,
+  AbusePattern 
+} from "../services/abuseDetection.js";
 
 router.post("/pay/batch", csrfOriginGuard, bodyLimit("256kb"), async (req, res) => {
   try {
@@ -96,6 +107,10 @@ router.post("/pay/batch", csrfOriginGuard, bodyLimit("256kb"), async (req, res) 
 
     // Record ops per minute metric
     paymentOpsPerMinute.observe(ops.length);
+    
+    // Record destination fanout for mule detection
+    const uniqueDestinations = new Set(ops.map((op: any) => op.destination)).size;
+    paymentDestinationFanout.observe(uniqueDestinations);
     
     // Apply cost-based rate limiting
     const costFn = (req as any).rateLimit?.cost;
@@ -110,6 +125,45 @@ router.post("/pay/batch", csrfOriginGuard, bodyLimit("256kb"), async (req, res) 
       /^[a-zA-Z0-9_-]{1,64}$/.test(headerTenant)
         ? headerTenant
         : "default";
+    
+    // Abuse detection analysis (metadata-only, privacy-bounded)
+    const abuseResult = analyzeBatchPayment(tenantId, ops);
+    
+    if (abuseResult.suspicious) {
+      // Record metrics
+      for (const pattern of abuseResult.patterns) {
+        const confidenceLevel = abuseResult.confidence >= 0.8 ? "high" 
+          : abuseResult.confidence >= 0.5 ? "medium" : "low";
+        abuseDetectionTotal.inc({ pattern, confidence_level: confidenceLevel });
+        abusePatternConfidence.observe({ pattern }, abuseResult.confidence);
+      }
+      
+      // Record total volume of suspicious payments
+      const totalAmount = ops.reduce(
+        (sum: bigint, op: any) => sum + BigInt(Math.floor(parseFloat(op.amount) * 1e7)),
+        BigInt(0)
+      );
+      for (const pattern of abuseResult.patterns) {
+        suspiciousPaymentVolume.observe({ pattern }, Number(totalAmount));
+      }
+      
+      // Log to audit trail
+      recordAbuseDetection(abuseResult, tenantId, {
+        endpoint: "/pay/batch",
+        opsCount: ops.length,
+        uniqueDestinations,
+      });
+      
+      // For high-confidence abuse, return 403 (review required)
+      if (abuseResult.confidence >= 0.9) {
+        return res.status(403).json({
+          error: "Payment batch flagged for review due to suspicious patterns",
+          patterns: abuseResult.patterns,
+          reviewRequired: true,
+        });
+      }
+    }
+    
     const r = await sendBatch(ops, tenantId);
 
     // Store idempotency result
