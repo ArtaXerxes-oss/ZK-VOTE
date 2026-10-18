@@ -20,7 +20,7 @@ import {
   relayerKeyTransactionsTotal,
   relayerSigningRefusedTotal,
   relayerSigningTierTotal,
-  relayerActiveKeyAgeSeconds,
+  setActiveKeyAgeSource,
   relayerFundedStandbyKeys,
   relayerDrainingKeys,
 } from "./metrics.js";
@@ -1033,6 +1033,14 @@ export class RelayerKeyManager {
         publicKey: key.publicKey,
         error: (err as Error).message,
       });
+      // A missing account is a definite zero, not "unknown": a null balance
+      // ranks as a viable standby and could be failed over to unfunded.
+      if (/not found/i.test((err as Error).message)) {
+        key.balanceXlm = 0;
+        key.lastBalanceCheckAt = new Date().toISOString();
+        this.updateMetrics();
+        return 0;
+      }
       return key.balanceXlm ?? 0;
     }
   }
@@ -1062,6 +1070,10 @@ export class RelayerKeyManager {
   public async checkAndHandleLowBalance(
     minBalanceXlm = this.minBalanceThresholdXlm,
     rpcServer?: StellarSdk.rpc.Server | { getAccount: (pk: string) => Promise<unknown> },
+    // Pass the orchestrator's planned rotation so failover gets the fence,
+    // funding preflight, drain and rollback. Without it the pointer swaps
+    // directly (kept for callers that have no orchestrator, e.g. unit tests).
+    rotate?: () => Promise<unknown>,
   ): Promise<{ rotated: boolean; activePublicKey: string; balanceXlm: number | null }> {
     const active = this.getActiveKey();
     if (!active) {
@@ -1086,6 +1098,15 @@ export class RelayerKeyManager {
       });
 
       try {
+        if (rotate) {
+          await rotate();
+          const now = this.getActiveKey();
+          return {
+            rotated: now?.id !== active.id,
+            activePublicKey: now?.publicKey ?? "",
+            balanceXlm: now?.balanceXlm ?? null,
+          };
+        }
         const rotationResult = await this.rotateActiveKey(
           undefined,
           "low_balance",
@@ -1304,13 +1325,6 @@ export class RelayerKeyManager {
       }
     }
 
-    // Age of the identity currently signing: drives the max-key-age alert.
-    const active = this.getActiveKey();
-    relayerActiveKeyAgeSeconds.set(
-      active?.activatedAt
-        ? Math.max(0, Math.floor((Date.now() - new Date(active.activatedAt).getTime()) / 1000))
-        : 0,
-    );
     // Standbys known to hold enough XLM to take over immediately.
     relayerFundedStandbyKeys.set(
       this.standbyCandidates().filter(
@@ -1338,3 +1352,4 @@ export class RelayerKeyManager {
 
 // Global Singleton Instance
 export const relayerKeyManager = new RelayerKeyManager();
+setActiveKeyAgeSource(() => relayerKeyManager.getActiveKey()?.activatedAt ?? null);

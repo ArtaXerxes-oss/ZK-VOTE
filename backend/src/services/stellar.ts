@@ -495,7 +495,6 @@ export const relayerRotation = new RelayerRotationOrchestrator({
   settings: {
     drainWindowMs: config.relayerRotationDrainWindowMs ?? 300_000,
     minFundingXlm: config.relayerRotationMinFundingXlm ?? 10,
-    fenceTimeoutMs: config.relayerRotationFenceTimeoutMs ?? 30_000,
     compromiseSloSeconds: config.relayerCompromiseSloSeconds ?? 300,
     compromiseCooldownMs: config.relayerCompromiseCooldownMs ?? 600_000,
     sweepSafeAccount: config.relayerSweepSafeAccount,

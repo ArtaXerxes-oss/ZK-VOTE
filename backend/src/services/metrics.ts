@@ -563,10 +563,27 @@ export const relayerKeyTransactionsTotal = new Counter({
 
 // ── Relayer key lifecycle (#746) ────────────────────────────────────────────
 
+let activeKeyActivatedAt: () => string | null = () => null;
+
+/**
+ * Register where the active key's activation time comes from. Only the
+ * process-wide relayerKeyManager calls this; test fixtures with their own
+ * managers must not take over the process gauge.
+ */
+export function setActiveKeyAgeSource(source: () => string | null): void {
+  activeKeyActivatedAt = source;
+}
+
+// Computed at scrape time: an untouched key must keep ageing, or the
+// rotation-overdue alert never fires for exactly the key nobody rotates.
 export const relayerActiveKeyAgeSeconds = new Gauge({
   name: "zkvote_relayer_active_key_age_seconds",
   help: "Seconds since the currently active relayer identity was activated",
   registers: [register],
+  collect() {
+    const at = activeKeyActivatedAt();
+    this.set(at ? Math.max(0, Math.floor((Date.now() - Date.parse(at)) / 1000)) : 0);
+  },
 });
 
 export const relayerKeyMaxAgeSeconds = new Gauge({

@@ -186,7 +186,6 @@ function fixture(
     settings: {
       drainWindowMs: options.drainWindowMs ?? 60_000,
       minFundingXlm: 10,
-      fenceTimeoutMs: 5_000,
       compromiseSloSeconds: 300,
       compromiseCooldownMs: 600_000,
       sweepSafeAccount: SAFE_ACCOUNT,
@@ -430,7 +429,9 @@ test("compromise drill under load: revoked at once, rotated inside the SLO, noth
   const late = paymentTx(f.ledger.loadAccount(f.keys.a.publicKey()), "after");
   await assert.rejects(f.km.signTransaction(late), (e: any) => e.reason === "identity_revoked");
   assert.ok(f.store.revocations.has(f.keys.a.publicKey()));
-  assert.ok((errors.get("identity_revoked") ?? 0) >= 0);
+  // Only the critical section in flight at declaration can hit the revoked
+  // key; the compromise flip does not wait behind the queued backlog.
+  assert.ok((errors.get("identity_revoked") ?? 0) <= 1, `revoked errors: ${errors.get("identity_revoked")}`);
 });
 
 test("compromise with no funded standby halts signing instead of activating an unfunded key", async () => {
@@ -673,4 +674,88 @@ test("readiness flags an active key older than the max age", () => {
   const { readiness } = f.orch.getStatus();
   assert.equal(readiness.rotationOverdue, true);
   assert.ok(readiness.activeKeyAgeDays! > 30);
+});
+
+test("compromise under a queued backlog: requests are not retried, so at most the in-flight one fails", async () => {
+  // Routes don't retry. A compromise flip that queued behind the FIFO lock
+  // would leave the revoked key active for every request ahead of it, and
+  // each of those would fail. The flip must not wait for the backlog.
+  const TOTAL = 40;
+  const g = fixture();
+  const runs = Array.from({ length: TOTAL }, (_, i) =>
+    g.lock.run(async () => {
+      const tx = paymentTx(g.ledger.loadAccount(g.km.getPublicKey()), `q-${i}`);
+      await tick();
+      await g.km.signTransaction(tx);
+      g.ledger.submit(tx);
+    }),
+  );
+  await tick();
+  const record = await g.orch.declareCompromise({
+    key: g.keys.a.publicKey(),
+    declaredBy: "oncall-1",
+    reason: "drill",
+  });
+  const settled = await Promise.allSettled(runs);
+  const failures = settled.filter((s) => s.status === "rejected").length;
+  assert.equal(record.halted ?? false, false);
+  assert.ok(failures <= 1, `${failures} of ${TOTAL} queued requests failed`);
+  assert.ok(record.timeToRotatedMs < 1_000, `rotated in ${record.timeToRotatedMs}ms`);
+});
+
+test("funding gap: a missing standby account reads as 0 XLM, not unknown", async () => {
+  const { config } = await import("../src/config.js");
+  const f = fixture({ fund: { b: null } });
+  const prev = config.testMode;
+  config.testMode = false; // checkBalance short-circuits in test mode
+  try {
+    const rpc = {
+      getAccount: async (pk: string) => {
+        if (!f.ledger.accounts.has(pk)) throw new Error(`Account not found: ${pk}`);
+        return { balances: [{ asset_type: "native", balance: "500.0000000" }] };
+      },
+    };
+    assert.equal(await f.km.checkBalance(f.keys.b.publicKey(), rpc), 0);
+    assert.equal(f.km.findKey(f.keys.b.publicKey())!.balanceXlm, 0);
+    // Ranked behind the funded standby instead of tied with it as "unknown".
+    await f.km.checkBalance(f.keys.c.publicKey(), rpc);
+    assert.equal(f.km.standbyCandidates()[0].publicKey, f.keys.c.publicKey());
+  } finally {
+    config.testMode = prev;
+  }
+});
+
+test("low-balance failover goes through the orchestrator: no cutover to an unfunded standby", async () => {
+  const f = fixture({ fund: { b: null, c: 2 } });
+  f.km.getActiveKey()!.balanceXlm = 1;
+  const result = await f.km.checkAndHandleLowBalance(5, undefined, () =>
+    f.orch.rotate({ actor: "system", reason: "low_balance" }),
+  );
+  assert.equal(result.rotated, false);
+  assert.equal(f.km.getPublicKey(), f.keys.a.publicKey());
+
+  // Once a standby is funded, the same failover rotates through the fence.
+  f.ledger.fund(f.keys.c.publicKey(), 500);
+  const ok = await f.km.checkAndHandleLowBalance(5, undefined, () =>
+    f.orch.rotate({ actor: "system", reason: "low_balance" }),
+  );
+  assert.equal(ok.rotated, true);
+  assert.equal(f.km.getPublicKey(), f.keys.c.publicKey());
+});
+
+test("key-age gauge keeps ageing with no key events, so the overdue alert can fire", async () => {
+  const { relayerKeyManager } = await import("../src/services/relayerKeyManager.js");
+  const { relayerActiveKeyAgeSeconds } = await import("../src/services/metrics.js");
+  relayerKeyManager.reset();
+  relayerKeyManager.initialize({ testMode: true });
+  // Only the activation time changes; nothing calls updateMetrics().
+  relayerKeyManager.getActiveKey()!.activatedAt = new Date(Date.now() - 100 * 86_400_000).toISOString();
+  const age = (await relayerActiveKeyAgeSeconds.get()).values[0].value;
+  assert.ok(age >= 100 * 86_400 - 5, `gauge reported ${age}s`);
+
+  // A fixture's own manager must not hijack the process-wide gauge.
+  const f = fixture();
+  f.km.getActiveKey()!.activatedAt = new Date().toISOString();
+  const after = (await relayerActiveKeyAgeSeconds.get()).values[0].value;
+  assert.ok(after >= 100 * 86_400 - 5);
 });

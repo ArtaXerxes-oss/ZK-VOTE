@@ -74,7 +74,6 @@ const envSchema = z.object({
   // Relayer key lifecycle (#746)
   RELAYER_ROTATION_DRAIN_WINDOW_MS: z.coerce.number().int().min(0).default(300000),
   RELAYER_ROTATION_MIN_FUNDING_XLM: z.coerce.number().min(0).default(10),
-  RELAYER_ROTATION_FENCE_TIMEOUT_MS: z.coerce.number().int().positive().default(30000),
   RELAYER_KEY_MAX_AGE_DAYS: z.coerce.number().positive().default(90),
   RELAYER_COMPROMISE_SLO_SECONDS: z.coerce.number().positive().default(300),
   RELAYER_COMPROMISE_COOLDOWN_MS: z.coerce.number().int().min(0).default(600000),
@@ -568,7 +567,6 @@ export const config = {
   // Relayer key lifecycle (#746)
   relayerRotationDrainWindowMs: validatedEnv.RELAYER_ROTATION_DRAIN_WINDOW_MS,
   relayerRotationMinFundingXlm: validatedEnv.RELAYER_ROTATION_MIN_FUNDING_XLM,
-  relayerRotationFenceTimeoutMs: validatedEnv.RELAYER_ROTATION_FENCE_TIMEOUT_MS,
   relayerKeyMaxAgeDays: validatedEnv.RELAYER_KEY_MAX_AGE_DAYS,
   relayerCompromiseSloSeconds: validatedEnv.RELAYER_COMPROMISE_SLO_SECONDS,
   relayerCompromiseCooldownMs: validatedEnv.RELAYER_COMPROMISE_COOLDOWN_MS,

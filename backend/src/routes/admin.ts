@@ -937,6 +937,7 @@ router.post(
       const failoverResult = await relayerKeyManager.checkAndHandleLowBalance(
         undefined,
         server as any,
+        () => relayerRotation.rotate({ actor: "system", reason: "low_balance" }),
       );
 
       res.json({

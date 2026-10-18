@@ -7,10 +7,15 @@
  */
 
 import { z } from "zod";
+import { extendZodWithOpenApi } from "@asteasolutions/zod-to-openapi";
 import { createHash } from "node:crypto";
 import sharp from "sharp";
 import { ALLOWED_IMAGE_MIMES, BN254_MODULUS } from "../config.js";
 import { BN254_FQ_MODULUS } from "../types/index.js";
+
+// Schemas below call .openapi(); extend here so importing this module does
+// not depend on openapi.ts having been loaded first (idempotent).
+extendZodWithOpenApi(z);
 
 async function fileTypeFromBuffer(
   buffer: Buffer,

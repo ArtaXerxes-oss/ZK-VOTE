@@ -266,7 +266,6 @@ export interface SweepAccount {
 export interface RotationSettings {
   drainWindowMs: number;
   minFundingXlm: number;
-  fenceTimeoutMs: number;
   compromiseSloSeconds: number;
   compromiseCooldownMs: number;
   sweepSafeAccount?: string;
@@ -382,29 +381,8 @@ export class RelayerRotationOrchestrator {
     if (this.current === record) this.current = null;
   }
 
-  private async fenced<T>(fn: () => Promise<T>, timeoutMs?: number): Promise<T> {
-    if (timeoutMs === undefined) return this.deps.fence(fn);
-    // Compromise path: the key is already revoked, so waiting for the lock
-    // only gives in-flight builds a clean switch; never wait unbounded.
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let ran = false;
-    const run = async () => {
-      if (ran) return undefined as T;
-      ran = true;
-      return fn();
-    };
-    const timeout = new Promise<T>((resolve, reject) => {
-      timer = setTimeout(() => {
-        log("warn", "relayer_rotation_fence_timeout", { timeoutMs });
-        run().then(resolve, reject);
-      }, timeoutMs);
-      (timer as any).unref?.();
-    });
-    try {
-      return await Promise.race([this.deps.fence(run), timeout]);
-    } finally {
-      clearTimeout(timer);
-    }
+  private fenced<T>(fn: () => Promise<T>): Promise<T> {
+    return this.deps.fence(fn);
   }
 
   /** First candidate whose account exists with enough XLM to take over. */
@@ -705,9 +683,11 @@ export class RelayerRotationOrchestrator {
       this.setPhase(record, "cutover");
       const { key: successor, rejected } = await this.firstFunded(km.standbyCandidates());
       if (successor) {
-        await this.fenced(async () => {
-          await km.rotateActiveKey(successor.id, "compromise", { drainPrevious: false });
-        }, this.deps.settings.fenceTimeoutMs);
+        // Not fenced: the lock is FIFO, so waiting would keep the revoked key
+        // active for every request queued ahead of us, and each would fail.
+        // Revocation already stops it signing; only the section in flight now
+        // can fail, and it would fail either way.
+        await km.rotateActiveKey(successor.id, "compromise", { drainPrevious: false });
         record.toKeyId = successor.id;
         record.toPublicKey = successor.publicKey;
         try {
