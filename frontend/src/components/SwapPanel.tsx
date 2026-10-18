@@ -133,6 +133,7 @@ export default function SwapPanel() {
       <h3 className="text-lg font-semibold">Swap XLM / USDC / EURC (real)</h3>
       <div className="grid grid-cols-3 gap-3">
         <select
+          aria-label="Swap from"
           value={from}
           onChange={(e) => setFrom(e.target.value as Asset)}
           className="border rounded px-3 py-2 bg-background"
@@ -141,8 +142,9 @@ export default function SwapPanel() {
           <option>USDC</option>
           <option>EURC</option>
         </select>
-        <span className="text-center py-2">→</span>
+        <span className="text-center py-2" aria-hidden="true">→</span>
         <select
+          aria-label="Swap to"
           value={to}
           onChange={(e) => setTo(e.target.value as Asset)}
           className="border rounded px-3 py-2 bg-background"
@@ -153,6 +155,8 @@ export default function SwapPanel() {
         </select>
       </div>
       <input
+        aria-label="Amount"
+        inputMode="decimal"
         value={amount}
         onChange={(e) => setAmount(e.target.value)}
         placeholder="Amount"
