@@ -381,16 +381,16 @@ export const positiveInteger = z
   );
 
 /**
- * IPFS CID validator (CIDv0 or CIDv1)
- */
-/**
- * IPFS CID validator (CIDv0 or CIDv1)
+ * IPFS CID validator (CIDv0 or CIDv1 or plain text <= 64 chars matching contract allowance)
  */
 export const ipfsCid = z.string().refine(
   (val) => {
-    if (!val || typeof val !== "string") return false;
+    if (typeof val !== "string") return false;
     const trimmed = val.trim();
+    if (!trimmed) return true; // Contract allows empty content_cid
     if (/[/?#\s\0\r\n\t]/.test(trimmed)) return false;
+    // Contract limit is MAX_CID_LEN = 64
+    if (trimmed.length > 64) return false;
     // CIDv0: Qm + 44 base58 chars (exact length)
     if (/^Qm[1-9A-HJ-NP-Za-km-z]{44}$/.test(trimmed)) return true;
     // CIDv1: bafy/bafk + base32 content (59+ chars)
@@ -401,15 +401,61 @@ export const ipfsCid = z.string().refine(
       const content = trimmed.slice(4);
       return /^[a-z2-7]+$/.test(content);
     }
-    // CIDv0: exact-length Bitcoin base58 encoding.
-    if (/^Qm[1-9A-HJ-NP-Za-km-z]{44}$/.test(val)) return true;
-    // CIDv1: bafy... or bafk... (59+ chars).
-    if ((val.startsWith("bafy") || val.startsWith("bafk")) && val.length >= 59)
-      return true;
-    return false;
+    // Allow valid contract-compatible identifiers up to 64 chars
+    return /^[a-zA-Z0-9._-]+$/.test(trimmed);
   },
-  { message: "Invalid IPFS CID format" },
+  { message: "Invalid IPFS CID format (must be valid CID or contract-legal string <= 64 chars)" },
 );
+
+/**
+ * DAO name schema matching on-chain MAX_DAO_NAME_LEN = 24 bytes and Unicode NFC normalization.
+ * Rejects zero-width characters, control characters, and inputs exceeding 24 UTF-8 bytes.
+ */
+export const daoNameSchema = z
+  .string()
+  .transform((val) => val.normalize("NFC"))
+  .refine(
+    (val) => {
+      if (!val || val.trim().length === 0) return false;
+      // Disallow zero-width characters, control characters, invisible joiners
+      if (/[\u200B-\u200D\uFEFF\u0000-\u001F\u007F-\u009F]/.test(val)) return false;
+      // On-chain Soroban contract checks name.len() <= 24 (byte count)
+      const byteLen = Buffer.byteLength(val, "utf8");
+      return byteLen >= 1 && byteLen <= 24 && val.length <= 24;
+    },
+    { message: "DAO name must be 1-24 characters (max 24 UTF-8 bytes) without control or zero-width characters" },
+  );
+
+/**
+ * Proposal title schema matching on-chain MAX_TITLE_LEN = 100 bytes and Unicode NFC normalization.
+ * Rejects zero-width characters, control characters, and inputs exceeding 100 UTF-8 bytes.
+ */
+export const proposalTitleSchema = z
+  .string()
+  .transform((val) => val.normalize("NFC"))
+  .refine(
+    (val) => {
+      if (!val || val.trim().length === 0) return false;
+      if (/[\u200B-\u200D\uFEFF\u0000-\u001F\u007F-\u009F]/.test(val)) return false;
+      // On-chain Soroban contract checks title.len() <= 100 (byte count)
+      const byteLen = Buffer.byteLength(val, "utf8");
+      return byteLen >= 1 && byteLen <= 100;
+    },
+    { message: "Proposal title must be 1-100 UTF-8 bytes without control or zero-width characters" },
+  );
+
+/**
+ * Proposal end_time schema matching on-chain voting/src/lib.rs:2320-2325:
+ * Must be a future Unix timestamp (in seconds).
+ */
+export const proposalEndTimeSchema = z.coerce
+  .number()
+  .int("end_time must be an integer timestamp")
+  .positive("end_time must be positive")
+  .refine(
+    (val) => val > Math.floor(Date.now() / 1000),
+    { message: "Proposal end_time must be in the future" },
+  );
 
 /**
  * Hex string validator for nullifiers (64 hex chars max)
@@ -688,17 +734,18 @@ export const anonymousCommentSchema = z.object(
       .nonnegative("proposalId must be a non-negative integer"),
     contentCid: z.string().refine(
       (val) => {
-        if (/^Qm[1-9A-HJ-NP-Za-km-z]{44}$/.test(val)) return true;
-        if (
-          (val.startsWith("bafy") || val.startsWith("bafk")) &&
-          val.length >= 59
-        )
-          return true;
-        return false;
         if (!val || typeof val !== "string") return false;
         const trimmed = val.trim();
         if (/[/?\\#\s\0\r\n\t]/.test(trimmed)) return false;
-        return CIDV0_REGEX.test(trimmed) || CIDV1_REGEX.test(trimmed);
+        if (/^Qm[1-9A-HJ-NP-Za-km-z]{44}$/.test(trimmed)) return true;
+        if (
+          (trimmed.startsWith("bafy") || trimmed.startsWith("bafk")) &&
+          trimmed.length >= 59 &&
+          trimmed.length <= 64
+        )
+          return true;
+        // Plaintext or backwards compatibility up to contract MAX_CID_LEN
+        return trimmed.length > 0 && trimmed.length <= 64;
       },
       { message: "Invalid submission" },
     ),

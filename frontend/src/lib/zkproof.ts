@@ -62,11 +62,77 @@ function loadRustProver(): Promise<RustProver> {
   return rustProverPromise;
 }
 
+export class WitnessValidationError extends Error {
+  constructor(message: string, public details?: unknown) {
+    super(message);
+    this.name = "WitnessValidationError";
+  }
+}
+
+/**
+ * Validates witness inputs before passing them to the witness calculator / prover WASM.
+ * Catches malformed siblings, non-field elements, depth discrepancies, and empty roots,
+ * preventing worker/prover crashes and DoS.
+ */
+export function validateWitnessInput(input: Record<string, unknown>): void {
+  for (const [key, val] of Object.entries(input)) {
+    if (val === undefined || val === null) {
+      throw new WitnessValidationError(`Witness signal "${key}" cannot be null or undefined`);
+    }
+
+    if (key === "pathElements" || key === "siblings") {
+      if (!Array.isArray(val) || val.length === 0) {
+        throw new WitnessValidationError(`Witness "${key}" must be a non-empty array of field elements`);
+      }
+      for (let i = 0; i < val.length; i++) {
+        try {
+          assertValidFieldElement(val[i], `${key}[${i}]`);
+        } catch (err: any) {
+          throw new WitnessValidationError(`Witness ${key}[${i}] validation failed: ${err.message}`);
+        }
+      }
+    } else if (key === "pathIndices") {
+      if (!Array.isArray(val) || val.length === 0) {
+        throw new WitnessValidationError(`Witness "${key}" must be a non-empty array`);
+      }
+      for (let i = 0; i < val.length; i++) {
+        const num = Number(val[i]);
+        if (num !== 0 && num !== 1) {
+          throw new WitnessValidationError(`Witness ${key}[${i}] must be 0 or 1, got ${val[i]}`);
+        }
+      }
+    } else if (key === "nullifier") {
+      try {
+        assertValidNullifier(val as string | bigint);
+      } catch (err: any) {
+        throw new WitnessValidationError(`Witness nullifier validation failed: ${err.message}`);
+      }
+    } else if (key === "root") {
+      try {
+        assertValidFieldElement(val as string | bigint, "root");
+        const b = typeof val === "string" ? BigInt(val.startsWith("0x") ? val : `0x${val}`) : (val as bigint);
+        if (b === 0n) {
+          throw new WitnessValidationError("Witness root cannot be zero (uninitialized tree root)");
+        }
+      } catch (err: any) {
+        throw new WitnessValidationError(`Witness root validation failed: ${err.message}`);
+      }
+    } else if (typeof val === "string" || typeof val === "number" || typeof val === "bigint") {
+      try {
+        assertValidFieldElement(val, key);
+      } catch (err: any) {
+        throw new WitnessValidationError(`Witness signal "${key}" validation failed: ${err.message}`);
+      }
+    }
+  }
+}
+
 async function proveWithRust(
   input: Record<string, unknown>,
   wasmPath: string | Uint8Array,
   zkeyPath: string | Uint8Array,
 ): Promise<GeneratedProof> {
+  validateWitnessInput(input);
   // Compute the witness with the circom WASM (snarkjs' engine).
   const { WitnessCalculatorBuilder } = await import("circom_runtime");
   const wasmBytes =
@@ -108,6 +174,7 @@ async function proveWithSnarkjs(
   wasmPath: string | Uint8Array,
   zkeyPath: string | Uint8Array,
 ): Promise<GeneratedProof> {
+  validateWitnessInput(input);
   // Off the main thread where the platform allows it (#92): a multi-second
   // BigInt proof on the main thread blocks rendering, which hands any script
   // on the page a timing trace via frame pacing alone. Timing masking is

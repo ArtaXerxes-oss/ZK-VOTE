@@ -10,6 +10,8 @@ import {
 } from "../middleware/index.js";
 import { z } from "zod";
 
+import { stellarDestinationSchema } from "../validation/schemas.js";
+
 const router = Router();
 
 const assetSchema = z.enum(["XLM", "USDC", "EURC"]);
@@ -37,7 +39,7 @@ const swapSubmitSchema = z
   .object({
     ...swapPairFields,
     destMin: stellarAmountSchema.optional(),
-    destination: z.string().optional(),
+    destination: stellarDestinationSchema.optional(),
   })
   .refine(distinctAssets, {
     message: "from and to must be distinct assets",
