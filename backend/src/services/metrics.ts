@@ -401,6 +401,126 @@ export const circuitBreakerTripsTotal = new Counter({
 });
 
 // ============================================
+// EXTERNAL ENDPOINT POOL METRICS (#745)
+// ============================================
+//
+// Per-endpoint health for every external dependency on a money path
+// (Horizon, Soroban RPC, anchors). `endpoint` is the URL origin only so
+// API keys in paths/queries never become label values.
+
+export const endpointHealthy = new Gauge({
+  name: "zkvote_endpoint_healthy",
+  help: "Whether an external endpoint is eligible for routing (1) or not (0)",
+  labelNames: ["dependency", "endpoint"] as const,
+  registers: [register],
+});
+
+export const endpointLedgerLag = new Gauge({
+  name: "zkvote_endpoint_ledger_lag",
+  help: "Ledgers an endpoint trails the highest ledger observed across its pool",
+  labelNames: ["dependency", "endpoint"] as const,
+  registers: [register],
+});
+
+export const endpointLatencySeconds = new Gauge({
+  name: "zkvote_endpoint_latency_ewma_seconds",
+  help: "Exponentially weighted moving average of endpoint call latency",
+  labelNames: ["dependency", "endpoint"] as const,
+  registers: [register],
+});
+
+export const endpointRequestsTotal = new Counter({
+  name: "zkvote_endpoint_requests_total",
+  help: "External endpoint calls by operation class and outcome",
+  labelNames: ["dependency", "endpoint", "op_class", "outcome"] as const,
+  registers: [register],
+});
+
+export const endpointFailoverTotal = new Counter({
+  name: "zkvote_endpoint_failover_total",
+  help: "Calls that succeeded only after rerouting away from a failed endpoint",
+  labelNames: ["dependency", "op_class"] as const,
+  registers: [register],
+});
+
+export const endpointFailoverLatency = new Histogram({
+  name: "zkvote_endpoint_failover_latency_seconds",
+  help: "Time from first endpoint failure to successful reroute within one call",
+  labelNames: ["dependency"] as const,
+  buckets: [0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30],
+  registers: [register],
+});
+
+export const endpointRetriesTotal = new Counter({
+  name: "zkvote_endpoint_retries_total",
+  help: "Retries issued by the shared endpoint retry policy",
+  labelNames: ["dependency", "op_class", "reason"] as const,
+  registers: [register],
+});
+
+export const endpointRetryBudgetExhaustedTotal = new Counter({
+  name: "zkvote_endpoint_retry_budget_exhausted_total",
+  help: "Retries suppressed because the dependency's retry budget was spent",
+  labelNames: ["dependency"] as const,
+  registers: [register],
+});
+
+export const endpointStaleRejectedTotal = new Counter({
+  name: "zkvote_endpoint_stale_rejected_total",
+  help: "Reads refused because no endpoint was within the finality-lag bound",
+  labelNames: ["dependency", "op_class"] as const,
+  registers: [register],
+});
+
+export const endpointDisagreementTotal = new Counter({
+  name: "zkvote_endpoint_disagreement_total",
+  help: "Arbitrated reads where endpoints returned different values at the same ledger",
+  labelNames: ["dependency"] as const,
+  registers: [register],
+});
+
+export const dependencyAvailableEndpoints = new Gauge({
+  name: "zkvote_dependency_available_endpoints",
+  help: "Endpoints currently eligible for routing per dependency",
+  labelNames: ["dependency"] as const,
+  registers: [register],
+});
+
+export const dependencyTotalEndpoints = new Gauge({
+  name: "zkvote_dependency_total_endpoints",
+  help: "Endpoints configured per dependency",
+  labelNames: ["dependency"] as const,
+  registers: [register],
+});
+
+// Restored: payments.ts / swap.ts import these, but a merge dropped them.
+export const swapContractRejectedTotal = new Counter({
+  name: "zkvote_swap_contract_rejected_total",
+  help: "Soroswap quote responses rejected because the returned contract id was absent or did not match the pinned router",
+  labelNames: ["reason"] as const,
+  registers: [register],
+});
+
+export const trustlinePreflightFailureTotal = new Counter({
+  name: "zkvote_trustline_preflight_failure_total",
+  help: "Payment or swap operations rejected before submission because a required Stellar trustline was missing or unauthorized",
+  labelNames: ["asset", "role", "reason"] as const,
+  registers: [register],
+});
+
+export const sponsorshipReserveXlm = new Gauge({
+  name: "zkvote_sponsorship_reserve_xlm",
+  help: "XLM locked in claimable-balance/MuxedAccount sponsorship reserves (#540)",
+  registers: [register],
+});
+
+export const sponsorshipReserveDepletedTotal = new Counter({
+  name: "zkvote_sponsorship_reserve_depleted_total",
+  help: "Reserve-check rejections before depletion (#540)",
+  registers: [register],
+});
+
+// ============================================
 // SEQUENCE NUMBER METRICS
 // ============================================
 

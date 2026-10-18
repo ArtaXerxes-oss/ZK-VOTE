@@ -179,3 +179,132 @@ groups:
             This is the canonical signal for a testnet/network reset.  Execute the
             network-reset runbook immediately: stop the relayer, wipe processed_events,
             remove the horizon cursor file, then restart and verify sequence is climbing.
+
+  # ── External endpoint pools (#745) ─────────────────────────────────────
+  # Horizon, Soroban RPC and anchor pools. `dependency` is horizon,
+  # soroban_rpc, anchor_usdc or anchor_eurc; `endpoint` is a URL origin.
+  - name: zkvote-endpoints
+    rules:
+      - alert: ZKVoteDependencyNoEligibleEndpoint
+        expr: zkvote_dependency_available_endpoints == 0 and zkvote_dependency_total_endpoints > 0
+        for: 2m
+        labels:
+          severity: critical
+          service: zkvote-relayer
+        annotations:
+          summary: "{{ $labels.dependency }} has no eligible endpoint"
+          description: >
+            Every configured {{ $labels.dependency }} endpoint is down, rate-limited
+            or breaker-open, so its money path is halted. Runbook: check
+            /health endpointPools for per-endpoint breakerState and
+            cooldownRemainingMs; confirm upstream status pages; add a provider to
+            HORIZON_URLS / SOROBAN_RPC_URLS / ANCHOR_*_URLS and restart if one
+            provider is down for longer than its SLA.
+
+      - alert: ZKVoteDependencyWithoutRedundancy
+        expr: zkvote_dependency_total_endpoints{dependency=~"horizon|soroban_rpc"} < 2
+        for: 1h
+        labels:
+          severity: warning
+          service: zkvote-relayer
+        annotations:
+          summary: "{{ $labels.dependency }} is configured with a single endpoint"
+          description: >
+            A single {{ $labels.dependency }} endpoint is a single point of failure for
+            votes and payments. Runbook: configure at least two independent providers
+            in HORIZON_URLS / SOROBAN_RPC_URLS.
+
+      - alert: ZKVoteDependencyDegraded
+        expr: zkvote_dependency_available_endpoints < zkvote_dependency_total_endpoints
+        for: 10m
+        labels:
+          severity: warning
+          service: zkvote-relayer
+        annotations:
+          summary: "{{ $labels.dependency }} is running with reduced redundancy"
+          description: >
+            At least one {{ $labels.dependency }} endpoint has been ineligible for 10
+            minutes; traffic is served by the rest. Runbook: find the endpoint with
+            zkvote_endpoint_healthy == 0 and check its provider; no action is needed
+            while another endpoint remains eligible.
+
+      - alert: ZKVoteEndpointLedgerLag
+        expr: max by (dependency, endpoint) (zkvote_endpoint_ledger_lag) > 5
+        for: 5m
+        labels:
+          severity: warning
+          service: zkvote-relayer
+        annotations:
+          summary: "{{ $labels.endpoint }} trails the {{ $labels.dependency }} tip by {{ $value }} ledgers"
+          description: >
+            The endpoint is past ENDPOINT_MAX_FINALITY_LAG_LEDGERS and is excluded
+            from witness, sequence and quote reads. Runbook: if all endpoints lag,
+            check network status before raising the bound; never raise it to make
+            a lagging provider eligible for witness reads.
+
+      - alert: ZKVoteStaleReadsRejected
+        expr: sum by (dependency, op_class) (increase(zkvote_endpoint_stale_rejected_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: critical
+          service: zkvote-relayer
+        annotations:
+          summary: "{{ $labels.dependency }} {{ $labels.op_class }} reads refused: no fresh endpoint"
+          description: >
+            Reads that feed witnesses, sequence numbers or quotes are failing closed
+            because no endpoint is within the finality-lag bound. Runbook: same as
+            ZKVoteEndpointLedgerLag; votes and payments resume automatically once a
+            fresh endpoint is available.
+
+      - alert: ZKVoteEndpointDisagreement
+        expr: sum by (dependency) (increase(zkvote_endpoint_disagreement_total[10m])) > 0
+        labels:
+          severity: critical
+          service: zkvote-relayer
+        annotations:
+          summary: "{{ $labels.dependency }} endpoints returned different state at the same ledger"
+          description: >
+            Two fresh endpoints disagreed about the same ledger and the read failed
+            closed. This indicates a fork, a provider bug or a malicious endpoint.
+            Runbook: grep relayer logs for endpoint_disagreement, compare both
+            providers against a third source, and remove the faulty endpoint from
+            the pool.
+
+      - alert: ZKVoteEndpointFailoverSpike
+        expr: sum by (dependency) (rate(zkvote_endpoint_failover_total[5m])) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+          service: zkvote-relayer
+        annotations:
+          summary: "{{ $labels.dependency }} calls are repeatedly failing over"
+          description: >
+            Calls succeed only after rerouting; latency is elevated by the
+            zkvote_endpoint_failover_latency_seconds distribution. Runbook: identify
+            the failing endpoint via zkvote_endpoint_requests_total by outcome.
+
+      - alert: ZKVoteEndpointRateLimited
+        expr: sum by (dependency, endpoint) (rate(zkvote_endpoint_requests_total{outcome="rate_limited"}[5m])) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+          service: zkvote-relayer
+        annotations:
+          summary: "{{ $labels.endpoint }} is rate-limiting the relayer"
+          description: >
+            The endpoint keeps answering 429. It is cooled down per Retry-After and
+            traffic sheds to peers. Runbook: request a higher quota or add a
+            provider; do not raise ENDPOINT_RETRY_BUDGET_RATIO.
+
+      - alert: ZKVoteEndpointRetryBudgetExhausted
+        expr: sum by (dependency) (increase(zkvote_endpoint_retry_budget_exhausted_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: zkvote-relayer
+        annotations:
+          summary: "{{ $labels.dependency }} retry budget exhausted"
+          description: >
+            Retries are being suppressed to avoid a retry storm, so transient
+            failures now reach users. Runbook: treat as a dependency outage; see
+            ZKVoteDependencyDegraded.

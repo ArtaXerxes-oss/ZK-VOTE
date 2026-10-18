@@ -9,6 +9,7 @@ import {
 import { config } from "../config.js";
 import { log } from "./logger.js";
 import { swapContractRejectedTotal } from "./metrics.js";
+import { markDegraded, markHealthy, markUnavailable } from "./service-health.js";
 import {
   canonicalizeStellarAmount,
   horizonStroopsToSorobanAmount,
@@ -32,7 +33,8 @@ export async function getQuote(
       amount,
       destAmount: q.destAmount,
     });
-    return { ...q, source: "horizon" as const };
+    markHealthy("swap_quotes");
+    return { ...q, source: "horizon" as const, degraded: false };
   } catch (horizonError) {
     const fallback = await getSoroswapQuote(sendAsset, destAsset, amount);
     if (fallback) {
@@ -44,8 +46,12 @@ export async function getQuote(
         destAmount: fallback.destAmount,
         contractId: fallback.contractId,
       });
-      return { ...fallback, path: [], source: "soroswap" as const };
+      // Soroswap is a quote-only fallback (#745): executeSwap still settles
+      // through Horizon, so surface the degraded source to the client.
+      markDegraded("swap_quotes", "serving Soroswap fallback quotes");
+      return { ...fallback, path: [], source: "soroswap" as const, degraded: true };
     }
+    markUnavailable("swap_quotes", (horizonError as Error).message);
     throw horizonError;
   }
 }
@@ -86,6 +92,7 @@ export async function getSoroswapQuote(
   try {
     const res = await fetch(
       `${url}?from=${sendAsset}&to=${destAsset}&amount=${amount}`,
+      { signal: AbortSignal.timeout(config.endpointRequestTimeoutMs) },
     );
     if (!res.ok) return null;
     const j: any = await res.json();

@@ -18,6 +18,7 @@ import { config } from "../config.js";
 import { log } from "../services/logger.js";
 import {
   server,
+  rpcPoolManager,
   relayerKeypair,
   callWithTimeout,
   simulateWithBackoff,
@@ -37,6 +38,10 @@ import {
   validateSponsoredFeeRequest,
   canonicalizeProof,
 } from "../services/stellar.js";
+import {
+  EndpointDisagreementError,
+  StaleReadError,
+} from "../services/endpoint-pool.js";
 import {
   anonymousGuard,
   tlsClientCertGuard,
@@ -1475,35 +1480,44 @@ router.get(
 
         const operation = contract.call("get_root", ...args);
 
-        const account = await (server as StellarSdk.rpc.Server).getAccount(
-          relayerKeypair.publicKey(),
-        );
-        const tx = new StellarSdk.TransactionBuilder(account, {
-          fee: "100000",
-          networkPassphrase: config.networkPassphrase,
-        })
-          .addOperation(operation)
-          .setTimeout(30)
-          .build();
+        // The root becomes a proof witness, so it is read through the
+        // arbitrated path (#745): only endpoints within the finality-lag
+        // bound answer, the highest ledger wins, and two endpoints giving
+        // different roots for the same ledger fail closed. Not-found and
+        // empty results are part of the arbitrated value so endpoints must
+        // agree on those too.
+        const readRoot = async (srv: StellarSdk.rpc.Server) => {
+          const account = await srv.getAccount(relayerKeypair.publicKey());
+          const tx = new StellarSdk.TransactionBuilder(account, {
+            fee: "100000",
+            networkPassphrase: config.networkPassphrase,
+          })
+            .addOperation(operation)
+            .setTimeout(30)
+            .build();
 
-        const simResult = await (
-          server as StellarSdk.rpc.Server
-        ).simulateTransaction(tx);
+          const simResult = await srv.simulateTransaction(tx);
+          const ledger = Number((simResult as any).latestLedger ?? 0);
+          if (!StellarSdk.rpc.Api.isSimulationSuccess(simResult)) {
+            return { value: "DAO_NOT_FOUND", ledger };
+          }
+          const resultScVal = simResult.result?.retval;
+          if (!resultScVal) return { value: "NO_RESULT_RETURNED", ledger };
+          return { value: scValToU256Hex(resultScVal), ledger };
+        };
 
-        if (!StellarSdk.rpc.Api.isSimulationSuccess(simResult)) {
-          throw new Error("DAO_NOT_FOUND");
+        const { value } = config.testMode
+          ? await readRoot(server as StellarSdk.rpc.Server)
+          : await rpcPoolManager.readArbitrated((srv) =>
+              readRoot(srv as unknown as StellarSdk.rpc.Server),
+            );
+        if (value === "DAO_NOT_FOUND" || value === "NO_RESULT_RETURNED") {
+          throw new Error(value);
         }
-
-        const resultScVal = simResult.result?.retval;
-        if (!resultScVal) {
-          throw new Error("NO_RESULT_RETURNED");
-        }
-
-        const root = scValToU256Hex(resultScVal);
 
         return {
           daoId,
-          root,
+          root: value,
         };
       });
 
@@ -1523,6 +1537,19 @@ router.get(
       } else if (errMsg === "NO_RESULT_RETURNED") {
         return next(
           new ApiError(500, ErrorCode.INTERNAL_ERROR, "No result returned"),
+        );
+      } else if (
+        err instanceof StaleReadError ||
+        err instanceof EndpointDisagreementError
+      ) {
+        // Refuse to hand out a root we cannot vouch for; clients retry.
+        log("warn", "root_fetch_unverified", { daoId, error: errMsg });
+        return next(
+          new ApiError(
+            503,
+            ErrorCode.SERVICE_UNAVAILABLE,
+            "Merkle root temporarily unverifiable; retry shortly",
+          ),
         );
       }
       log("error", "root_fetch_error", { daoId, error: errMsg });

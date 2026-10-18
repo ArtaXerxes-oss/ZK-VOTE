@@ -43,6 +43,34 @@ dotenv.config();
 // ENVIRONMENT SCHEMA (ZOD VALIDATION)
 // ============================================
 
+function urlListSchema(name: string) {
+  return z
+    .string()
+    .optional()
+    .refine(
+      (value) =>
+        !value ||
+        value
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .every((s) => z.string().url().safeParse(s).success),
+      `${name} must be a comma-separated list of URLs`,
+    );
+}
+
+/** Merge singular + plural URL env vars into a de-duplicated pool. */
+function urlPool(
+  fallback: string,
+  ...values: Array<string | undefined>
+): string[] {
+  const urls = values
+    .flatMap((v) => (v ? v.split(",") : []))
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return urls.length > 0 ? Array.from(new Set(urls)) : [fallback];
+}
+
 const envSchema = z.object({
   NODE_ENV: z
     .enum(["development", "production", "test"])
@@ -123,6 +151,19 @@ const envSchema = z.object({
   HORIZON_URL: z.string().url().optional(),
   ANCHOR_USDC_URL: z.string().url().optional(),
   ANCHOR_EURC_URL: z.string().url().optional(),
+  // Endpoint pools (#745): comma-separated, tried in health-weighted order.
+  // The singular *_URL stays the first member for backward compatibility.
+  HORIZON_URLS: urlListSchema("HORIZON_URLS"),
+  ANCHOR_USDC_URLS: urlListSchema("ANCHOR_USDC_URLS"),
+  ANCHOR_EURC_URLS: urlListSchema("ANCHOR_EURC_URLS"),
+  ENDPOINT_MAX_FINALITY_LAG_LEDGERS: z.coerce.number().int().min(0).default(5),
+  ENDPOINT_HEALTH_INTERVAL_MS: z.coerce.number().int().positive().default(15000),
+  ENDPOINT_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(10000),
+  ENDPOINT_RETRY_MAX_ATTEMPTS: z.coerce.number().int().min(1).default(3),
+  ENDPOINT_RETRY_BASE_MS: z.coerce.number().int().positive().default(200),
+  ENDPOINT_RETRY_MAX_MS: z.coerce.number().int().positive().default(5000),
+  ENDPOINT_RETRY_BUDGET_RATIO: z.coerce.number().min(0).max(1).default(0.2),
+  ENDPOINT_ARBITRATION_QUORUM: z.coerce.number().int().min(1).default(2),
   SOROSWAP_API: z.string().url().optional(),
   SOROSWAP_CONTRACT_ID: z
     .string()
@@ -598,6 +639,30 @@ export const config = {
   horizonUrl: validatedEnv.HORIZON_URL || "https://horizon-testnet.stellar.org",
   anchorUsdcUrl: validatedEnv.ANCHOR_USDC_URL || "https://anchor.circle.com",
   anchorEurcUrl: validatedEnv.ANCHOR_EURC_URL || "https://anchor.eurc.circle.com",
+  // Endpoint pools (#745). The singular URL, when set, is always a member.
+  horizonUrls: urlPool(
+    "https://horizon-testnet.stellar.org",
+    validatedEnv.HORIZON_URL,
+    validatedEnv.HORIZON_URLS,
+  ),
+  anchorUsdcUrls: urlPool(
+    "https://anchor.circle.com",
+    validatedEnv.ANCHOR_USDC_URL,
+    validatedEnv.ANCHOR_USDC_URLS,
+  ),
+  anchorEurcUrls: urlPool(
+    "https://anchor.eurc.circle.com",
+    validatedEnv.ANCHOR_EURC_URL,
+    validatedEnv.ANCHOR_EURC_URLS,
+  ),
+  endpointMaxFinalityLagLedgers: validatedEnv.ENDPOINT_MAX_FINALITY_LAG_LEDGERS,
+  endpointHealthIntervalMs: validatedEnv.ENDPOINT_HEALTH_INTERVAL_MS,
+  endpointRequestTimeoutMs: validatedEnv.ENDPOINT_REQUEST_TIMEOUT_MS,
+  endpointRetryMaxAttempts: validatedEnv.ENDPOINT_RETRY_MAX_ATTEMPTS,
+  endpointRetryBaseMs: validatedEnv.ENDPOINT_RETRY_BASE_MS,
+  endpointRetryMaxMs: validatedEnv.ENDPOINT_RETRY_MAX_MS,
+  endpointRetryBudgetRatio: validatedEnv.ENDPOINT_RETRY_BUDGET_RATIO,
+  endpointArbitrationQuorum: validatedEnv.ENDPOINT_ARBITRATION_QUORUM,
   soroswapApi: validatedEnv.SOROSWAP_API || "https://api.soroswap.finance/quote",
   // Soroswap fallback is disabled unless the exact router contract is pinned.
   soroswapContractId: validatedEnv.SOROSWAP_CONTRACT_ID,
