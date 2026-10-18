@@ -7,8 +7,9 @@ import {
   type PaymentAsset,
 } from "../services/payments.js";
 import { bodyLimit, queryLimiter, csrfOriginGuard, paymentBatchCostLimiter, masterKeyGuard } from "../middleware/index.js";
-import { log } from "../services/logger.js";
 import { batch_partial_failure_total, paymentOpsPerMinute } from "../services/metrics.js";
+import { payRequestSchema, payBatchRequestSchema } from "../validation/schemas.js";
+import { mapContractError } from "../utils/errors.js";
 
 log("info", "pay_routes_loaded", {});
 
@@ -63,11 +64,13 @@ router.post("/pay", masterKeyGuard, csrfOriginGuard, bodyLimit("5kb"), async (re
   }
   
   try {
-    const { asset, destination, amount, memo } = req.body;
-    if (!asset || !destination || !amount)
+    const parsed = payRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
       return res
         .status(400)
-        .json({ error: "asset, destination, amount required" });
+        .json({ error: parsed.error.issues[0]?.message ?? "Invalid payment request" });
+    }
+    const { asset, destination, amount, memo } = parsed.data;
     const r = await sendPayment({ asset, destination, amount, memo });
     
     // Store idempotency result
@@ -78,6 +81,10 @@ router.post("/pay", masterKeyGuard, csrfOriginGuard, bodyLimit("5kb"), async (re
     res.json(r);
   } catch (e: any) {
     log("error", "pay_error", { error: e.message });
+    const mapped = mapContractError(e);
+    if (mapped) {
+      return res.status(mapped.statusCode).json({ error: mapped.message, code: mapped.code });
+    }
     const trustlineError = /trustline|issuer authorization/i.test(String(e.message));
     res.status(trustlineError ? 409 : 500).json({
       error: trustlineError ? e.message : "Payment failed",
@@ -92,7 +99,6 @@ import {
   suspiciousPaymentVolume,
   paymentDestinationFanout,
 } from "../services/metrics.js";
-import { payRequestSchema, payBatchRequestSchema } from "../validation/schemas.js";
 import { 
   analyzeBatchPayment, 
   recordAbuseDetection,
@@ -101,9 +107,11 @@ import {
 
 router.post("/pay/batch", csrfOriginGuard, bodyLimit("256kb"), async (req, res) => {
   try {
-    const { ops } = req.body;
-    if (!Array.isArray(ops))
-      return res.status(400).json({ error: "ops array required" });
+    const parsed = payBatchRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.issues[0]?.message ?? "ops array required" });
+    }
+    const { ops } = parsed.data;
 
     // Record ops per minute metric
     paymentOpsPerMinute.observe(ops.length);
