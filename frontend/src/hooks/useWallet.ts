@@ -15,6 +15,7 @@ import {
   persistConnectionIntent,
 } from "../services/freighter";
 import { clearAllStores } from "../store";
+import { clearAllQueryCaches } from "../lib/cacheInvalidation";
 
 export interface WalletState {
   publicKey: string | null;
@@ -84,6 +85,9 @@ export function useWallet() {
 
     if (wallet.isConnected) {
       unlistenAccount = listenToAccountChange((newAccount) => {
+        // Server data cached for the previous account must not leak into the
+        // new session (#755).
+        void clearAllQueryCaches();
         if (!newAccount) {
           setWallet((prev) => ({
             ...prev,
@@ -229,6 +233,7 @@ export function useWallet() {
     safeLocalStorageRemove("selectedWalletId");
     persistConnectionIntent(false);
     clearAllStores();
+    void clearAllQueryCaches();
 
     // Clear all identity and cryptographic secrets from localStorage
     const secretKeyPatterns = [
