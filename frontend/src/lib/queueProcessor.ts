@@ -29,6 +29,24 @@ let intervalId: ReturnType<typeof setInterval> | null = null;
 // ============================================================
 
 /**
+ * Asks the membership tree whether the queued proof's root is still in its
+ * history. If the check itself cannot run (offline, RPC down), the entry is
+ * treated as valid and the normal retry path decides.
+ */
+async function isRootStillValid(entry: QueueEntry): Promise<boolean> {
+  try {
+    const { getZkVoteClient } = await import("./client");
+    const tx = await getZkVoteClient(null).membershipTree.root_ok({
+      dao_id: BigInt(entry.payload.daoId),
+      root: BigInt(`0x${entry.payload.root}`),
+    });
+    return tx.result !== false;
+  } catch {
+    return true;
+  }
+}
+
+/**
  * Submit one queue entry.
  *
  * This function is idempotent: if the entry is already in-flight it returns
@@ -46,6 +64,16 @@ export async function processEntry(entry: QueueEntry): Promise<void> {
 
   // Skip entries in backoff period
   if (entry.retryAfter !== null && entry.retryAfter > Date.now()) {
+    return;
+  }
+
+  // A retry may carry a root that has since been evicted from the tree's
+  // history. Check before resubmitting so a dead proof is not replayed (#752).
+  if (entry.attempts > 0 && !(await isRootStillValid(entry))) {
+    submissionQueue.markFailed(
+      entry.id,
+      "This vote's Merkle root is no longer accepted. Cast your vote again to generate a fresh proof.",
+    );
     return;
   }
 
