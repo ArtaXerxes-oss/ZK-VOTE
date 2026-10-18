@@ -4,6 +4,9 @@
  */
 
 import { v4 as uuidv4 } from 'uuid'
+import { createLogger } from './logger.js'
+
+const logger = createLogger('factory-orchestrator')
 
 export enum FactoryStep {
   VALIDATE_INPUT = 1,
@@ -169,7 +172,7 @@ export class FactoryOrchestrator {
    * Step implementations
    */
   private async validateInput(ticketId: string, params: DAOCreationParams): Promise<void> {
-    console.log(`[${ticketId}] Validating input...`)
+    logger.info('factory_step', { ticketId, step: 'validate_input' })
     
     // Name validation
     if (params.name.length < 3 || params.name.length > 32) {
@@ -188,7 +191,7 @@ export class FactoryOrchestrator {
   }
 
   private async reserveName(ticketId: string, params: DAOCreationParams): Promise<void> {
-    console.log(`[${ticketId}] Reserving name: ${params.name}`)
+    logger.info('factory_step', { ticketId, step: 'reserve_name', name: params.name })
     
     // Check name availability
     // In production, would interact with registry contract
@@ -205,7 +208,7 @@ export class FactoryOrchestrator {
   }
 
   private async createRegistry(ticketId: string, params: DAOCreationParams): Promise<void> {
-    console.log(`[${ticketId}] Creating registry entry...`)
+    logger.info('factory_step', { ticketId, step: 'create_registry' })
     
     // Deploy or call registry contract
     const mockContractId = `registry_${params.name}_${Date.now()}`
@@ -224,7 +227,7 @@ export class FactoryOrchestrator {
   }
 
   private async deployMembershipSBT(ticketId: string, params: DAOCreationParams): Promise<void> {
-    console.log(`[${ticketId}] Deploying membership SBT...`)
+    logger.info('factory_step', { ticketId, step: 'deploy_membership_sbt' })
     
     const mockContractId = `sbt_${params.name}_${Date.now()}`
     
@@ -242,7 +245,7 @@ export class FactoryOrchestrator {
   }
 
   private async deployMembershipTree(ticketId: string, params: DAOCreationParams): Promise<void> {
-    console.log(`[${ticketId}] Deploying membership tree...`)
+    logger.info('factory_step', { ticketId, step: 'deploy_membership_tree' })
     
     const mockContractId = `tree_${params.name}_${Date.now()}`
     
@@ -260,7 +263,7 @@ export class FactoryOrchestrator {
   }
 
   private async deployVoting(ticketId: string, params: DAOCreationParams): Promise<void> {
-    console.log(`[${ticketId}] Deploying voting contract...`)
+    logger.info('factory_step', { ticketId, step: 'deploy_voting' })
     
     const mockContractId = `voting_${params.name}_${Date.now()}`
     
@@ -278,7 +281,7 @@ export class FactoryOrchestrator {
   }
 
   private async deployComments(ticketId: string, params: DAOCreationParams): Promise<void> {
-    console.log(`[${ticketId}] Deploying comments contract...`)
+    logger.info('factory_step', { ticketId, step: 'deploy_comments' })
     
     const mockContractId = `comments_${params.name}_${Date.now()}`
     
@@ -289,17 +292,17 @@ export class FactoryOrchestrator {
   }
 
   private async initializeTreasury(ticketId: string, params: DAOCreationParams): Promise<void> {
-    console.log(`[${ticketId}] Initializing ${params.treasuryTier} treasury...`)
+    logger.info('factory_step', { ticketId, step: 'init_treasury', tier: params.treasuryTier })
     await this.sleep(2000)
   }
 
   private async registerSearch(ticketId: string, params: DAOCreationParams): Promise<void> {
-    console.log(`[${ticketId}] Registering in search index...`)
+    logger.info('factory_step', { ticketId, step: 'register_search_index' })
     await this.sleep(1000)
   }
 
   private async verifyFirstVote(ticketId: string, params: DAOCreationParams): Promise<void> {
-    console.log(`[${ticketId}] Running first vote verification...`)
+    logger.info('factory_step', { ticketId, step: 'verify_first_vote' })
     
     // Execute automated first vote drill
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -315,7 +318,7 @@ export class FactoryOrchestrator {
   }
 
   private async markComplete(ticketId: string, params: DAOCreationParams): Promise<void> {
-    console.log(`[${ticketId}] DAO creation complete!`)
+    logger.info('factory_complete', { ticketId })
     const saga = this.sagas.get(ticketId)!
     saga.status = FactoryStatus.COMPLETED
     saga.updatedAt = new Date()
@@ -326,13 +329,13 @@ export class FactoryOrchestrator {
    */
   private async compensate(ticketId: string): Promise<void> {
     const saga = this.sagas.get(ticketId)!
-    console.log(`[${ticketId}] Compensating saga...`)
+    logger.warn('factory_compensating', { ticketId })
 
     // Execute compensation actions in reverse order
     const actions = [...saga.compensationLedger].reverse()
     for (const action of actions) {
       if (!action.executed) {
-        console.log(`Executing compensation: ${action.action}`)
+        logger.warn('factory_compensation_action', { ticketId, action: action.action })
         // In production, would call actual cleanup functions
         action.executed = true
         await this.sleep(500)

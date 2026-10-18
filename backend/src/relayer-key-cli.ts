@@ -34,6 +34,13 @@
 
 import { issueActionApproval } from "./services/relayer-signing-policy.js";
 
+// Command output is this tool's interface (operators pipe it), so it goes to
+// stdout directly rather than through the structured service logger.
+function out(text: string): void {
+  process.stdout.write(`${text}
+`);
+}
+
 function parseArgs(argv: string[]): { command: string; flags: Record<string, string> } {
   const [command = "help", ...rest] = argv;
   const flags: Record<string, string> = {};
@@ -78,7 +85,7 @@ async function call(method: "GET" | "POST", path: string, body?: Record<string, 
     body: body ? JSON.stringify(body) : undefined,
   });
   const json = await res.json().catch(() => ({}));
-  console.log(JSON.stringify({ httpStatus: res.status, elapsedMs: Date.now() - started, ...json }, null, 2));
+  out(JSON.stringify({ httpStatus: res.status, elapsedMs: Date.now() - started, ...json }, null, 2));
   if (!res.ok) process.exit(1);
 }
 
@@ -132,11 +139,11 @@ async function main(): Promise<void> {
         process.exit(2);
       }
       const ttlMs = Number(flags["ttl-seconds"] ?? 600) * 1000;
-      console.log(issueActionApproval(id, secret, required(flags, "action"), Date.now() + ttlMs));
+      out(issueActionApproval(id, secret, required(flags, "action"), Date.now() + ttlMs));
       return;
     }
     default:
-      console.log(
+      out(
         "Commands: status | rotate | rollback | finalize | compromise | sweep | halt | resume | approve\n" +
           "See the header of src/relayer-key-cli.ts for flags and the compromise runbook.",
       );
