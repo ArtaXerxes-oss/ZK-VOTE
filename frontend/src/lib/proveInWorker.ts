@@ -15,6 +15,31 @@ export interface WorkerProofResult {
   publicSignals: unknown;
 }
 
+/** Why a proving worker died, so the UI can offer retry vs fallback (#756). */
+export type WorkerCrashKind = "oom" | "exception" | "killed" | "stalled";
+
+export class ProofWorkerError extends Error {
+  constructor(
+    public readonly kind: WorkerCrashKind,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ProofWorkerError";
+  }
+}
+
+/** Default time without a result before the worker is treated as stalled. */
+export const PROOF_STALL_TIMEOUT_MS = 5 * 60 * 1000;
+
+export function classifyWorkerCrash(message: string | undefined): WorkerCrashKind {
+  const m = (message ?? "").toLowerCase();
+  if (/out of memory|memory access out of bounds|allocation failed|rangeerror.*memory|oom/.test(m)) {
+    return "oom";
+  }
+  if (!m) return "killed";
+  return "exception";
+}
+
 /** Whether this environment can run the proving worker. */
 export function workerAvailable(): boolean {
   return typeof Worker !== "undefined" && typeof URL !== "undefined";
@@ -24,6 +49,7 @@ export async function proveInWorker(
   input: Record<string, unknown>,
   wasm: string | Uint8Array,
   zkey: string | Uint8Array,
+  stallTimeoutMs: number = PROOF_STALL_TIMEOUT_MS,
 ): Promise<WorkerProofResult> {
   const worker = new Worker(
     new URL("../workers/proof.worker.ts", import.meta.url),
@@ -34,18 +60,32 @@ export async function proveInWorker(
   const asPayload = (v: string | Uint8Array) =>
     typeof v === "string" ? v : (v.slice().buffer as ArrayBuffer);
 
+  let stallTimer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await new Promise<WorkerProofResult>((resolve, reject) => {
+      // A worker killed by the OS or stuck under memory pressure may never
+      // fire onerror; without this the UI would spin forever (#756).
+      stallTimer = setTimeout(
+        () =>
+          reject(new ProofWorkerError("stalled", "Proof generation stalled — please retry")),
+        stallTimeoutMs,
+      );
       worker.onmessage = (e: MessageEvent<ProofResponse>) => {
         const res = e.data;
         if (res.id !== id) return;
         if (res.ok) {
           resolve({ proof: res.proof, publicSignals: res.publicSignals });
         } else {
-          reject(new Error(res.error ?? "Proof generation failed"));
+          const kind = classifyWorkerCrash(res.error);
+          reject(new ProofWorkerError(kind, res.error ?? "Proof generation failed"));
         }
       };
-      worker.onerror = () => reject(new Error("Proof generation failed"));
+      worker.onerror = (e: ErrorEvent) => {
+        const kind = classifyWorkerCrash(e?.message);
+        reject(new ProofWorkerError(kind, e?.message || "Proof generation failed"));
+      };
+      worker.onmessageerror = () =>
+        reject(new ProofWorkerError("exception", "Proof worker sent an unreadable message"));
 
       const req: ProofRequest = {
         id,
@@ -56,6 +96,7 @@ export async function proveInWorker(
       worker.postMessage(req);
     });
   } finally {
+    clearTimeout(stallTimer);
     // Drop the scope that held the witness rather than leaving it resident.
     worker.terminate();
   }
