@@ -17,6 +17,7 @@ import {
   rpcPoolHealthyEndpoints,
   rpcPoolTotalEndpoints,
   rpcEndpointLatency,
+  normalizeEndpoint,
   sequenceRecoveriesTotal,
   sequenceMismatchesTotal,
   sequenceRecoveryDuration,
@@ -527,8 +528,11 @@ export class RpcPoolManager {
       }
       ep.lastChecked = Date.now();
 
-      // Update Prometheus gauges per endpoint
-      rpcEndpointLatency.set({ url: ep.url }, ep.latencyMs / 1000);
+      // Update Prometheus gauges per endpoint (host only, #749)
+      rpcEndpointLatency.set(
+        { endpoint: normalizeEndpoint(ep.url) },
+        ep.latencyMs / 1000,
+      );
 
       results.push({
         url: ep.url,
