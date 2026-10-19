@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "./ui/Button";
 import Alert from "./ui/Alert";
 import type { StellarWalletsKit } from "@creit.tech/stellar-wallets-kit";
@@ -13,8 +14,11 @@ import {
 } from "../lib/zkproof";
 import { assertValidNullifier, assertValidFieldElement } from "../types/index";
 import { fetchWithProgress } from "../lib/fetchWithProgress";
+import { provingPreflightError } from "../lib/devicePreflight";
 import { getMerklePath } from "../lib/merkletree";
 import { useOptimisticVote } from "../queries/proposalQueries";
+import { isWrongNetwork, type RelayerStatus } from "../queries/relayerQueries";
+import { queryKeys } from "../lib/queryClient";
 import {
   generateDeterministicZKCredentials,
   generateFakeZKCredentials,
@@ -77,12 +81,32 @@ export default function VoteModal({
   const [panicMode, setPanicMode] = useState(false);
   const { addReceipt } = useReceipts();
   const { setOptimisticVote, clearPendingVote } = useOptimisticVote();
+  const queryClient = useQueryClient();
+
+  // Escape closes the dialog, the same as clicking the backdrop
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
 
   const handleVote = async (choice: boolean) => {
     setStep("generating");
     setError(null);
 
     try {
+      // Fail before the expensive proving step if the relayer is on another network
+      const relayer = queryClient.getQueryData<{ status: RelayerStatus }>(
+        queryKeys.relayer.status(),
+      );
+      if (isWrongNetwork(relayer?.status)) {
+        throw new Error(
+          "The relayer is connected to a different Stellar network than this app, so your vote could not be counted. Voting is blocked until they match.",
+        );
+      }
+
       // Initialize contract clients
       const clients = getZkVoteClient(publicKey);
 
@@ -215,6 +239,8 @@ export default function VoteModal({
       // needs the artifacts built for Vote(N); the default circuit's are used
       // when the election declares no depth (#93).
       const artifacts = resolveCircuitUrls(merkleDepth);
+      const preflightError = provingPreflightError();
+      if (preflightError) throw new Error(preflightError);
       const zkey = await fetchWithProgress(
         artifacts.zkeyUrl,
         ({ loadedBytes, totalBytes }) => {

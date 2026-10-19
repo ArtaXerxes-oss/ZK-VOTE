@@ -49,9 +49,14 @@ signal input pathIndices[levels];    // Merkle proof path (0 or 1)
 ### Constraint 1: Commitment Computation
 
 ```circom
-component commitmentHasher = Poseidon(2);
+// Note: In vote_template.circom, Poseidon(4) is used for leaf hashing to include
+// identity commitments and voter weight alongside secret and salt.
+// Legacy baseline utilized:
+component commitmentHasher = Poseidon(4);
 commitmentHasher.inputs[0] <== secret;
 commitmentHasher.inputs[1] <== salt;
+commitmentHasher.inputs[2] <== identityNullifier;
+commitmentHasher.inputs[3] <== voterWeight;
 signal commitment;
 commitment <== commitmentHasher.out;
 ```
@@ -60,7 +65,7 @@ commitment <== commitmentHasher.out;
 
 - Poseidon hash is deterministic
 - Output is assigned with `<==` (constrained assignment)
-- No under-constraint risk
+- Inputs must be strictly bound to membership leaf
 
 ### Constraint 2: Merkle Tree Verification
 
@@ -96,17 +101,31 @@ nullifier === nullifierHasher.out;
 - Output equality enforced with `===`
 - Domain separation via daoId and proposalId
 
-### Constraint 4: Vote Choice Binary Check
+### Constraint 4: Vote Choice Binary / Range Check
 
 ```circom
-voteChoice * (voteChoice - 1) === 0;
+// In vote_template.circom (line 122), candidate selection uses LessThan(32):
+component choiceChecker = LessThan(32);
+choiceChecker.in[0] <== voteChoice;
+choiceChecker.in[1] <== numCandidates;
+choiceChecker.out === 1;
+
+// For binary voting (vote.circom), strict quadratic boolean enforcement is required:
+// voteChoice * (voteChoice - 1) === 0;
 ```
 
-**Analysis**: ✓ FULLY CONSTRAINED
+**Soundness & Under-Constraint Analysis (SPIKE-062)**:
+- **Field-Aliasing Risk**: `LessThan(32)` assumes inputs are $< 2^{32}$. In finite fields ($\mathbb{F}_q$), an adversarial prover supplying an input $\ge 2^{32}$ (wrapped modulo $q$) can satisfy range gadgets if intermediate bit-decomposition signals are under-constrained.
+- **Remediation**: Circuits must enforce explicit algebraic boolean constraints (`v * (v - 1) === 0`) for binary elections, and explicit `Bits2Num(32)` bit-width verification for multi-choice elections prior to `LessThan` comparison.
 
-- Enforces `voteChoice ∈ {0, 1}`
-- Algebraic constraint: `v(v-1) = 0` only holds for v=0 or v=1
-- No under-constraint risk
+---
+
+### Systematic Soundness Audit Findings Across 30+ Circuits
+
+1. **`vote_template.circom`**: Missing algebraic boolean check on `voteChoice` when operating in binary mode; relies solely on `LessThan(32)`.
+2. **`exclusion_proof.circom` (line 100)**: Unconstrained conditional branch `if (pathIndices[i] == 0)` in proof verification admits path confusion where distinct Merkle branches collapse to one root.
+3. **`did_attribute_binding.circom` (line 12)**: Contains unconstrained witness signals that lack cryptographic signature binding constraints.
+4. **`merkle_tree.circom` (line 143)**: `Sha3Hasher` placeholder component (`out <== in[0] + in[1]`) must not be used in production circuits as linear combination is non-cryptographic.
 
 ## Merkle Tree Circuit Analysis (merkle_tree.circom)
 

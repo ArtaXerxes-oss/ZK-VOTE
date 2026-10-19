@@ -264,6 +264,33 @@ describe("VoteModal", () => {
     expect(defaultProps.onClose).toHaveBeenCalled();
   });
 
+  it("calls onClose when Escape is pressed", () => {
+    renderWithQueryClient(<VoteModal {...defaultProps} />);
+
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    expect(defaultProps.onClose).toHaveBeenCalled();
+  });
+
+  it("blocks the vote before proving when the relayer is on another network", async () => {
+    const queryClient = createTestQueryClient();
+    queryClient.setQueryData(["relayer", "status"], {
+      status: { state: "mismatch", message: "m", mismatches: ["passphrase"], wrongNetwork: true },
+      relayerConfig: null,
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <VoteModal {...defaultProps} />
+      </QueryClientProvider>,
+    );
+
+    fireEvent.click(screen.getByText("Vote Yes"));
+
+    await vi.waitFor(() => {
+      expect(screen.getByText(/different Stellar network/)).toBeInTheDocument();
+    });
+  });
+
   it("shows generating state after clicking Vote Yes", async () => {
     renderWithQueryClient(<VoteModal {...defaultProps} />);
 

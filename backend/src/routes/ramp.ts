@@ -16,10 +16,12 @@ function parseRampQuery(query: Record<string, unknown>) {
   if (asset !== "USDC" && asset !== "EURC") {
     throw new Error("asset must be USDC or EURC");
   }
-  if (typeof account !== "string" || !/^G[A-Z2-7]{55}$/.test(account)) {
-    throw new Error("account must be a valid Stellar G address");
+  if (typeof account !== "string" || !(/^G[A-Z2-7]{55}$/.test(account) || /^M[A-Z2-7]{68}$/.test(account))) {
+    throw new Error("account must be a valid Stellar G or M address");
   }
-  if (typeof amount !== "string") throw new Error("amount is required");
+  if (typeof amount !== "string" || !/^\d+(\.\d{1,7})?$/.test(amount) || Number(amount) <= 0) {
+    throw new Error("amount must be a positive decimal string with up to 7 decimals");
+  }
   return { asset, account, amount };
 }
 

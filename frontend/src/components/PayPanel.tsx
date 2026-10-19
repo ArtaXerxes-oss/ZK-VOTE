@@ -190,13 +190,13 @@ export default function PayPanel() {
         </div>
       )}
       <div className="grid grid-cols-2 gap-3">
-        <select value={asset} onChange={e => { setAsset(e.target.value as Asset); setTrustlineMessage(null); }} className="border rounded px-3 py-2 bg-background">
+        <select aria-label="Asset" value={asset} onChange={e => { setAsset(e.target.value as Asset); setTrustlineMessage(null); }} className="border rounded px-3 py-2 bg-background">
           <option>XLM</option><option>USDC</option><option>EURC</option>
         </select>
-        <input value={amount} onChange={e => setAmount(e.target.value)} placeholder="Amount (7 decimals)" className="border rounded px-3 py-2 bg-background" />
+        <input aria-label="Amount" inputMode="decimal" value={amount} onChange={e => setAmount(e.target.value)} placeholder="Amount (7 decimals)" className="border rounded px-3 py-2 bg-background" />
       </div>
-      <input value={dest} onChange={e => { setDest(e.target.value); setTrustlineMessage(null); }} placeholder="Destination G... or M... (muxed for inflow)" className="w-full border rounded px-3 py-2 bg-background font-mono text-sm" />
-      <input value={memo} onChange={e => setMemo(e.target.value)} placeholder="Memo (optional)" className="w-full border rounded px-3 py-2 bg-background" />
+      <input aria-label="Destination address" value={dest} onChange={e => { setDest(e.target.value); setTrustlineMessage(null); }} placeholder="Destination G... or M... (muxed for inflow)" className="w-full border rounded px-3 py-2 bg-background font-mono text-sm" />
+      <input aria-label="Memo (optional)" value={memo} onChange={e => setMemo(e.target.value)} placeholder="Memo (optional)" className="w-full border rounded px-3 py-2 bg-background" />
       {asset !== "XLM" && (
         <div className="rounded border p-3 text-sm space-y-2">
           <Button
@@ -207,7 +207,7 @@ export default function PayPanel() {
             Check {asset} trustline
           </Button>
           {trustlineMessage && (
-            <div className="text-xs text-muted-foreground">{trustlineMessage}</div>
+            <div role="status" className="text-xs text-muted-foreground">{trustlineMessage}</div>
           )}
         </div>
       )}
