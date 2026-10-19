@@ -8,6 +8,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import request from "supertest";
+import type { Request, Response } from "express";
 import { Counter, Gauge, Histogram, Registry } from "prom-client";
 
 process.env.RELAYER_TEST_MODE = "true";
@@ -46,10 +47,18 @@ const { DRILLDOWN_EVENT } = await import("../src/services/metric-drilldown.js");
 
 const repo = path.resolve(import.meta.dirname, "..", "..");
 
-function children(name: string): Array<Record<string, string>> {
-  const metric: any = register.getSingleMetric(name);
+type Labels = Record<string, string>;
+
+/** Live children of a prom-client metric (its private hashMap), as label sets. */
+function childLabels(metric: unknown): Labels[] {
+  const map = (metric as { hashMap?: Record<string, { labels?: Labels }> }).hashMap ?? {};
+  return Object.values(map).map((v) => v.labels ?? {});
+}
+
+function children(name: string): Labels[] {
+  const metric = register.getSingleMetric(name);
   assert.ok(metric, `${name} registered`);
-  return Object.values(metric.hashMap ?? {}).map((v: any) => v.labels ?? {});
+  return childLabels(metric);
 }
 
 let seq = 0;
@@ -178,12 +187,12 @@ test("guard: enum labels fall back to 'other'; capped labels overflow past their
   const enumMetric = new Gauge({ name: uniq("enum"), help: "x", labelNames: ["role"], registers: [reg] });
   enumMetric.set({ role: "primary" }, 1);
   enumMetric.set({ role: "attacker-role" }, 1);
-  const roles = Object.values((enumMetric as any).hashMap).map((v: any) => v.labels.role).sort();
+  const roles = childLabels(enumMetric).map((l) => l.role).sort();
   assert.deepEqual(roles, [OTHER_VALUE, "primary"].sort());
 
   const capped = new Counter({ name: uniq("capped"), help: "x", labelNames: ["tier"], registers: [reg] });
   for (let i = 0; i < 50; i++) capped.inc({ tier: `t${i}` });
-  const tiers = Object.values((capped as any).hashMap).map((v: any) => v.labels.tier);
+  const tiers = childLabels(capped).map((l) => l.tier);
   assert.equal(tiers.length, 5, "tier is capped at 4 + overflow");
   assert.ok(tiers.includes(OVERFLOW_VALUE));
 });
@@ -193,7 +202,7 @@ test("guard: label combinations stop at the per-metric budget", () => {
   const name = uniq("combo");
   const metric = new Counter({ name, help: "x", labelNames: ["reason", "status"], registers: [reg] });
   for (let r = 0; r < 48; r++) for (let s = 0; s < 64; s++) metric.inc({ reason: `r${r}`, status: `s${s}` });
-  const count = Object.keys((metric as any).hashMap).length;
+  const count = childLabels(metric).length;
   assert.equal(count, childBudget(name) + 1);
 });
 
@@ -205,7 +214,7 @@ test("guard covers labels(), startTimer() and exemplar-free histogram paths", ()
     h.startTimer({ tier: `b${i}` })();
     h.labels({ tier: `c${i}` }).observe(2);
   }
-  assert.ok(Object.keys((h as any).hashMap).length <= 5);
+  assert.ok(childLabels(h).length <= 5);
 });
 
 test("guard is idempotent on already-sanitised labels", () => {
@@ -214,15 +223,20 @@ test("guard is idempotent on already-sanitised labels", () => {
   for (let i = 0; i < 10; i++) g.set({ tier: `x${i}` }, 1);
   g.inc({ tier: OVERFLOW_VALUE });
   g.dec({ tier: OVERFLOW_VALUE });
-  assert.equal(Object.keys((g as any).hashMap).length, 5);
+  assert.equal(childLabels(g).length, 5);
 });
 
 // ── Attack-mint drills through real instrumentation ───────────────────────
 
 function fakeExchange(urlPath: string, routePath?: string) {
   const handlers: Record<string, Array<() => void>> = {};
-  const req: any = { method: "GET", path: urlPath, headers: {}, route: routePath ? { path: routePath } : undefined };
-  const res: any = {
+  const req = {
+    method: "GET",
+    path: urlPath,
+    headers: {},
+    route: routePath ? { path: routePath } : undefined,
+  } as unknown as Request;
+  const res = {
     statusCode: routePath ? 200 : 404,
     on: (ev: string, cb: () => void) => ((handlers[ev] ??= []).push(cb), res),
     getHeader: () => undefined,
@@ -230,7 +244,7 @@ function fakeExchange(urlPath: string, routePath?: string) {
       (handlers.close ?? []).forEach((cb) => cb());
       return res;
     },
-  };
+  } as unknown as Response;
   return { req, res };
 }
 
