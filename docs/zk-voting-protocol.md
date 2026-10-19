@@ -325,3 +325,30 @@ ZKV1 bytes (hex) = 0x0100 + ("01" * 64) + ("02" * 128) + ("03" * 64)
 ### Scope note
 
 This format currently covers the BN254 G1&times;G2&times;G1 proof shape used by the single on-chain `Proof` type (`contracts/zkvote-groth16/src/lib.rs`). The BLS12-381 curve id byte is defined and round-trip tested, but `ProofBls381` uses different point sizes (`BytesN<96>`/`BytesN<192>`); encoding those is a straightforward follow-up (a `curve_id`-dependent length) left out of this change to keep the initial format landing minimal and unambiguous for the BN254 path that is actually deployed today.
+
+---
+
+## 4. Cross-DAO Identity Derivation & Linkability Prevention
+
+### Problem Statement: Cross-DAO Secret Reuse
+If voters reuse raw `(secret, salt, blindingFactor)` credentials across multiple DAOs:
+1. **Commitment Correlation**: `Poseidon(DOMAIN_TAG, secret, salt, blinding)` produces identical leaf values across different DAO Merkle trees, publicly exposing that the same voter belongs to each of those DAOs.
+2. **Nullifier & Compromise Blast Radius**: While nullifiers `Poseidon(secret, daoId, proposalId)` incorporate `daoId`, an admin compromising or observing one DAO's secret preimage can test nullifiers across other DAOs or link timing and behavioral footprints.
+
+### The Canonical Derivation Standard
+To ensure absolute domain separation and unlinkability, credentials must be derived per DAO using a cryptographically isolated Key Derivation Function (KDF):
+
+```text
+secret_dao   = BigInt(SHA-256("zkvote:secret:"   || daoId || masterSeed))
+salt_dao     = BigInt(SHA-256("zkvote:salt:"     || daoId || masterSeed))
+blinding_dao = BigInt(SHA-256("zkvote:blinding:" || daoId || masterSeed))
+```
+
+Each derived value is reduced into the BN254 scalar field ($< r$). The resulting commitment:
+$$\text{Commitment}_{\text{DAO}} = \text{Poseidon}(\text{DOMAIN\_TAG}, \text{secret}_{\text{dao}}, \text{salt}_{\text{dao}}, \text{blinding}_{\text{dao}})$$
+is mathematically independent between distinct `daoId` values.
+
+### Migration & Rotation
+- Members rotating credentials generate new per-DAO derived identities without carrying over linkability.
+- Recovery UX utilizes deterministic wallet signatures bound to `daoId` via `generateZKCredentials(kit, daoId)` or `derivePerDaoCredentials(masterSecret, daoId)`.
+- Compromising any single DAO admin or registry node bounds the blast radius exclusively to that single DAO, preserving anonymity across the voter's broader governance activity.
