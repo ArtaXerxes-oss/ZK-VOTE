@@ -136,13 +136,8 @@ jobs:
         run: npm ci
       - name: Enforce lockfile integrity
         run: npm ci --ignore-scripts --audit=false
-      - name: Lint (includes JSDoc validation + type check)
-        run: npm run lint
-      - name: Format check
-        run: npx prettier --check "src/**/*.ts"
-      - name: Validate environment profiles
-        run: npm run validate-profiles
       - name: Run tests (including .test.ts files)
+        # Runs before lint so repo-wide lint errors on main cannot skip the tests.
         run: npm test 2>&1 | tee test-output.log
         env:
           RELAYER_TEST_MODE: 'true'
@@ -164,6 +159,12 @@ jobs:
           echo ""
           echo "Test execution log:"
           tail -20 test-output.log || echo "No test output"
+      - name: Lint (includes JSDoc validation + type check)
+        run: npm run lint
+      - name: Format check
+        run: npx prettier --check "src/**/*.ts"
+      - name: Validate environment profiles
+        run: npm run validate-profiles
       - name: Check OpenAPI spec and API.md are up to date
         run: npm run docs:check
         env:
