@@ -20,6 +20,7 @@
  */
 
 import { encryptData, decryptData } from "./secureStorage";
+import type { VoteBinding } from "../lib/walletSession";
 
 // ============================================================
 // Types
@@ -87,6 +88,15 @@ export interface QueueEntry {
   conflictDetail: string | null;
   /** Transaction hash if submission succeeded */
   txHash: string | null;
+  /**
+   * Wallet session the proof was built in (#750): hashed account tag and
+   * network. The processor holds the entry, without spending an attempt,
+   * while a different account or network is connected. Absent on entries
+   * queued before #750; those submit from whatever session is live.
+   */
+  binding?: VoteBinding;
+  /** Why the entry is waiting on the wallet, for the UI. Null when not held. */
+  heldReason?: string | null;
 }
 
 /** Public-facing queue state */
@@ -283,7 +293,7 @@ export const submissionQueue = {
    *
    * @returns The queue entry (new or existing)
    */
-  enqueue(payload: VotePayload): QueueEntry {
+  enqueue(payload: VotePayload, binding?: VoteBinding | null): QueueEntry {
     const id = payload.nullifier;
 
     const existing = state.entries[id];
@@ -315,6 +325,8 @@ export const submissionQueue = {
       lastError: null,
       conflictDetail: null,
       txHash: null,
+      ...(binding ? { binding } : {}),
+      heldReason: null,
     };
 
     state = { ...state, entries: { ...state.entries, [id]: entry } };
@@ -342,6 +354,7 @@ export const submissionQueue = {
           status: "submitting",
           lastAttemptAt: Date.now(),
           attempts: entry.attempts + 1,
+          heldReason: null,
         },
       },
     };
@@ -473,6 +486,41 @@ export const submissionQueue = {
     const updated = { ...state.entries };
     delete updated[id];
     state = { ...state, entries: updated };
+    persist(state);
+    notify();
+  },
+
+  /**
+   * Hold a pending entry until its wallet session is back (#750). Does not
+   * count as an attempt and sets no backoff: it resumes as soon as the
+   * matching account and network reconnect.
+   */
+  markHeld(id: string, reason: string): void {
+    const entry = state.entries[id];
+    if (!entry || entry.status !== "pending" || entry.heldReason === reason) return;
+    state = {
+      ...state,
+      entries: { ...state.entries, [id]: { ...entry, heldReason: reason } },
+    };
+    persist(state);
+    notify();
+  },
+
+  /**
+   * Remove settled entries (submitted / failed / conflict) but keep proofs
+   * that have not been sent yet. Used on wallet disconnect: deleting an
+   * unsent proof would strand the vote and force a fresh 60 s prove (#750).
+   */
+  clearSettled(): void {
+    const kept: Record<string, QueueEntry> = {};
+    for (const [id, entry] of Object.entries(state.entries)) {
+      if (entry.status === "pending" || entry.status === "submitting") kept[id] = entry;
+    }
+    state = { entries: kept };
+    if (Object.keys(kept).length === 0) {
+      this.clearAll();
+      return;
+    }
     persist(state);
     notify();
   },

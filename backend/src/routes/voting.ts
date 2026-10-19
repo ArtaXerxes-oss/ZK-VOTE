@@ -91,9 +91,14 @@ import {
   offlineRetryTotal,
 } from "../services/metrics.js";
 import { sharedSingleFlight } from "../utils/singleflight.js";
+import { voteSessionGuard } from "../middleware/voteSession.js";
+import voteSessionRoutes from "./voteSession.js";
 import type { Groth16Proof } from "../types/index.js";
 
 const router = Router();
+
+// Wallet-session binding for /vote (#750)
+router.use(voteSessionRoutes);
 
 if (!config.testMode) {
   scheduleCoverTraffic();
@@ -648,6 +653,7 @@ router.post(
   walletRateLimiter,
   voteLimiter,
   validateBody(voteSchema),
+  voteSessionGuard,
   (async (req: Request, res: Response, next: NextFunction) => {
     let body = config.stripRequestBodies ? {} : req.body;
 

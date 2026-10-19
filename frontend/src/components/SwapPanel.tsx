@@ -7,6 +7,10 @@ import {
   horizonStroopsToSorobanAmount,
   parseStroops,
 } from "../lib/stellarAmount";
+import {
+  useOnWalletSessionChange,
+  useSessionBoundForm,
+} from "../hooks/useWalletSession";
 
 type Asset = "XLM" | "USDC" | "EURC";
 
@@ -16,6 +20,10 @@ export default function SwapPanel() {
   const [amount, setAmount] = useState("10");
   const [quote, setQuote] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  // A quote belongs to the session it was taken in: drop it when the wallet
+  // switches account or network, and block a swap until re-quoted (#750).
+  const { blockReason } = useSessionBoundForm([from, to, amount, quote]);
+  useOnWalletSessionChange(() => setQuote(null));
 
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
@@ -102,6 +110,12 @@ export default function SwapPanel() {
   };
 
   const doSwap = async () => {
+    const sessionBlock = blockReason();
+    if (sessionBlock) {
+      setQuote(null);
+      alert(`${sessionBlock} Get a new quote first.`);
+      return;
+    }
     setLoading(true);
     try {
       if (from === to) throw new Error("Choose two different assets");
