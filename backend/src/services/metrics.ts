@@ -12,6 +12,13 @@ import {
   Gauge,
   collectDefaultMetrics,
 } from "prom-client";
+// Imported first: patches prom-client so every metric below is budget-guarded
+// (#749). See metric-cardinality.ts for the label policy.
+import {
+  BANNED_LABELS,
+  auditRegistry,
+  installCardinalityGuard,
+} from "./metric-cardinality.js";
 
 // ============================================
 // REGISTRY
@@ -70,27 +77,49 @@ export const httpResponseSize = new Histogram({
 });
 
 // ============================================
-// COALESCING METRICS
+// COALESCING METRICS (Bounded cardinality)
 // ============================================
+
+/**
+ * Normalise SingleFlight / coalescing deduplication key to a bounded operation category.
+ * Prevents dynamic IDs (daoId, proposalId) from creating unbounded metric series.
+ */
+export function normalizeCoalesceKey(key: string): string {
+  if (!key) return "unknown";
+  const prefix = key.split(":")[0];
+  switch (prefix) {
+    case "proposal":
+    case "root":
+    case "root-history":
+    case "daos":
+    case "comments":
+    case "comment":
+    case "membership":
+    case "sync":
+      return prefix;
+    default:
+      return "other";
+  }
+}
 
 export const coalescingHitsTotal = new Counter({
   name: "zkvote_coalescing_hits_total",
   help: "Total request coalescing hits",
-  labelNames: ["key"] as const,
+  labelNames: ["operation"] as const,
   registers: [register],
 });
 
 export const coalescingMissesTotal = new Counter({
   name: "zkvote_coalescing_misses_total",
   help: "Total request coalescing misses (original requests)",
-  labelNames: ["key"] as const,
+  labelNames: ["operation"] as const,
   registers: [register],
 });
 
 export const coalescingWaitTime = new Histogram({
   name: "zkvote_coalescing_wait_time_seconds",
   help: "Time spent waiting for coalesced requests in seconds",
-  labelNames: ["key"] as const,
+  labelNames: ["operation"] as const,
   buckets: [0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30],
   registers: [register],
 });
@@ -151,10 +180,24 @@ export const rpcPoolTotalEndpoints = new Gauge({
   registers: [register],
 });
 
+/**
+ * Normalise RPC endpoint URL to a bounded hostname or alias.
+ * Strips authentication tokens, query parameters, paths, and user info.
+ */
+export function normalizeEndpoint(rawUrl: string): string {
+  if (!rawUrl) return "unknown";
+  try {
+    const parsed = new URL(rawUrl);
+    return parsed.hostname + (parsed.port ? `:${parsed.port}` : "");
+  } catch {
+    return rawUrl.split("?")[0].split("/")[0] || "unknown";
+  }
+}
+
 export const rpcEndpointLatency = new Gauge({
   name: "zkvote_rpc_endpoint_latency_seconds",
   help: "RPC endpoint latency in seconds",
-  labelNames: ["url"] as const,
+  labelNames: ["endpoint"] as const,
   registers: [register],
 });
 
@@ -525,7 +568,6 @@ export const wsMessageDuration = new Histogram({
 export const wsRateLimitTotal = new Counter({
   name: "zkvote_ws_rate_limit_total",
   help: "Total WebSocket connections blocked by rate limiting",
-  labelNames: ["ip"] as const,
   registers: [register],
 });
 
@@ -536,7 +578,7 @@ export const wsRateLimitTotal = new Counter({
 export const relayerKeyBalance = new Gauge({
   name: "zkvote_relayer_key_balance_xlm",
   help: "Current balance of relayer keys in XLM",
-  labelNames: ["key_id", "role"] as const,
+  labelNames: ["role"] as const,
   registers: [register],
 });
 
@@ -550,14 +592,14 @@ export const relayerKeyRotationsTotal = new Counter({
 export const relayerKeyAgeSeconds = new Gauge({
   name: "zkvote_relayer_key_age_seconds",
   help: "Age of relayer key in seconds since activation",
-  labelNames: ["key_id"] as const,
+  labelNames: ["role"] as const,
   registers: [register],
 });
 
 export const relayerKeyTransactionsTotal = new Counter({
   name: "zkvote_relayer_key_transactions_total",
-  help: "Total transactions signed by relayer key",
-  labelNames: ["key_id"] as const,
+  help: "Total transactions signed by relayer key role",
+  labelNames: ["role"] as const,
   registers: [register],
 });
 
@@ -618,10 +660,27 @@ export const unauthenticated_rejection_total = new Counter({
   registers: [register],
 });
 
+/**
+ * Normalise target resource to a bounded category.
+ * Prevents dynamic resource IDs/paths from expanding Prometheus cardinality.
+ */
+export function normalizeResourceType(resource: string): string {
+  if (!resource) return "unknown";
+  const lower = resource.toLowerCase();
+  if (lower.startsWith("dao")) return "dao";
+  if (lower.startsWith("proposal")) return "proposal";
+  if (lower.startsWith("key") || lower.startsWith("secret")) return "key";
+  if (lower.startsWith("comment")) return "comment";
+  if (lower.startsWith("membership") || lower.startsWith("voter")) return "membership";
+  if (lower.startsWith("session")) return "session";
+  if (lower.startsWith("registry")) return "registry";
+  return "unknown";
+}
+
 export const cross_tenant_denial_total = new Counter({
   name: "zkvote_cross_tenant_denial_total",
   help: "Total access attempts denied due to cross-tenant or cross-DAO resource isolation policies",
-  labelNames: ["tenant_id", "target_resource", "reason"] as const,
+  labelNames: ["resource_type", "reason"] as const,
   registers: [register],
 });
 
@@ -782,3 +841,51 @@ export const outboxLagGauge = new Gauge({
   labelNames: ["channel"] as const,
   registers: [register],
 });
+
+// ============================================
+// METRICS CARDINALITY GOVERNANCE & AUDIT (#749)
+// ============================================
+
+/**
+ * High-cardinality and attacker-controlled label dimensions banned from
+ * Prometheus metrics. The policy (bounds, budgets, runtime guard) lives in
+ * metric-cardinality.ts; any metric declaring one of these fails the CI gate.
+ */
+export const PROHIBITED_METRIC_LABELS: ReadonlySet<string> = new Set(
+  Object.keys(BANNED_LABELS),
+);
+
+export interface CardinalityAuditResult {
+  valid: boolean;
+  totalMetrics: number;
+  violations: Array<{
+    metric: string;
+    reason: string;
+    labels?: string[];
+  }>;
+}
+
+/**
+ * Audits the registry against cardinality governance rules: no prohibited
+ * labels, every label declared with a bound, live children within each
+ * metric's budget, and modeled samples within the global budget.
+ */
+export async function auditRegistryCardinality(
+  customRegister: Registry = register,
+): Promise<CardinalityAuditResult> {
+  const report = auditRegistry(customRegister);
+  const labelsOf = new Map(report.metrics.map((m) => [m.name, m.labels]));
+  return {
+    valid: report.violations.length === 0,
+    totalMetrics: report.metrics.length,
+    violations: report.violations.map((v) => ({
+      metric: v.metric,
+      reason: `${v.rule}: ${v.detail}`,
+      labels: labelsOf.get(v.metric),
+    })),
+  };
+}
+
+// Bind the guard to this registry last, so it sees every metric above and
+// repairs any constructed before prom-client was patched.
+installCardinalityGuard(register);
