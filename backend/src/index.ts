@@ -721,6 +721,9 @@ async function startBackgroundServices(): Promise<void> {
   // Dedicated confirmation worker (#172): single poller for all outstanding
   // transaction-confirmation waits, with exponential backoff + jitter.
   startConfirmationWorker();
+
+  // Closes relayer drain windows on time even when no admin call polls (#746).
+  relayerRotation.startTicker();
 }
 
 /**
@@ -754,6 +757,7 @@ async function stopBackgroundServices(): Promise<void> {
 
   // Drain any outstanding confirmation waits so callers never hang on exit.
   void stopConfirmationWorker();
+  relayerRotation.stopTicker();
 }
 
 /**
