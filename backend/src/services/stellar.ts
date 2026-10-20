@@ -9,17 +9,8 @@
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { config, BN254_SCALAR_FIELD } from "../config.js";
 import { log, logger } from "./logger.js";
-import { getMetadata, setMetadata, getWriteDb } from "./db.js";
-import {
-  SigningPolicy,
-  DEFAULT_TIER_LIMITS,
-  parseCosigners,
-  parseTierLimits,
-} from "./relayer-signing-policy.js";
-import {
-  RelayerRotationOrchestrator,
-  SqliteKeyLifecycleStore,
-} from "./relayer-rotation.js";
+import { createCoverTrafficScheduler } from "./cover-traffic.js";
+import { getMetadata, setMetadata } from "./db.js";
 import {
   rpcCallsTotal,
   rpcCallDuration,
@@ -27,7 +18,9 @@ import {
   rpcPoolHealthyEndpoints,
   rpcPoolTotalEndpoints,
   rpcEndpointLatency,
+  normalizeEndpoint,
   sequenceRecoveriesTotal,
+  coverTrafficScheduledTotal,
   sequenceMismatchesTotal,
   sequenceRecoveryDuration,
   sequenceHealthStatus,
@@ -642,8 +635,11 @@ export class RpcPoolManager {
       }
       ep.lastChecked = Date.now();
 
-      // Update Prometheus gauges per endpoint
-      rpcEndpointLatency.set({ url: ep.url }, ep.latencyMs / 1000);
+      // Update Prometheus gauges per endpoint (host only, #749)
+      rpcEndpointLatency.set(
+        { endpoint: normalizeEndpoint(ep.url) },
+        ep.latencyMs / 1000,
+      );
 
       results.push({
         url: ep.url,
@@ -1328,29 +1324,25 @@ export async function submitTransactionWithRecovery(
 }
 
 // Compatibility stubs for voting route (relocated from threshold-coordinator)
+// Cover traffic is scheduled as a Poisson process (mean 50s, i.e. the previous
+// 10%-per-5s rate) and only logs/counts today: sending dummy transactions needs
+// an approved fee budget (SPIKE-025, docs/spikes/SPIKE-025-rate-limit-cover-traffic.md).
+const COVER_TRAFFIC_MEAN_INTERVAL_MS = 50_000;
+const COVER_AMOUNT = "0.0001";
+const coverTraffic = createCoverTrafficScheduler({
+  meanIntervalMs: COVER_TRAFFIC_MEAN_INTERVAL_MS,
+  onTick: () => {
+    coverTrafficScheduledTotal.inc();
+    log("info", "cover_traffic_scheduled", { amount: COVER_AMOUNT });
+  },
+});
+
 export function scheduleCoverTraffic(): void {
-  // Schedule cover traffic to obfuscate vote timing patterns
-  // Uses Poisson distribution to send dummy XLM transactions at random intervals
-  const COVER_TRAFFIC_INTERVAL_MS = 5000; // Check every 5 seconds
-  const COVER_TRAFFIC_PROBABILITY = 0.1; // 10% chance per check
-  const COVER_AMOUNT = "0.0001"; // Small XLM amount for cover traffic
+  if (!config.testMode) coverTraffic.start();
+}
 
-  if (!config.testMode) {
-    const intervalId = setInterval(() => {
-      if (Math.random() < COVER_TRAFFIC_PROBABILITY) {
-        log("info", "cover_traffic_scheduled", {
-          amount: COVER_AMOUNT,
-          timestamp: new Date().toISOString(),
-        });
-        // In production, this would send a small XLM transaction to a cover address
-        // via the WebSocket broadcast to all connected clients
-        // The actual implementation would integrate with the confirmation hub
-      }
-    }, COVER_TRAFFIC_INTERVAL_MS);
-
-    // Store interval ID for cleanup on shutdown
-    (globalThis as any).__coverTrafficInterval = intervalId;
-  }
+export function stopCoverTraffic(): void {
+  coverTraffic.stop();
 }
 
 export function monitorMissingVotes(): void {}

@@ -60,7 +60,7 @@ import {
   relayerKeypair,
   getPendingSequenceLockOps,
   waitForSequenceLockIdle,
-  relayerRotation,
+  stopCoverTraffic,
 } from "./services/stellar.js";
 import {
   startConfirmationWorker,
@@ -293,6 +293,10 @@ const corsOptions: cors.CorsOptions = {
     "X-Client-Id",
     "X-Master-Key",
     "X-CSRF-Token",
+    // Wallet-session binding for /vote (#750)
+    "X-Vote-Session",
+    "X-Vote-Session-Mac",
+    "X-Vote-Network",
   ],
   exposedHeaders: [
     "X-Token-Id",
@@ -501,6 +505,7 @@ const supervisor = new ServiceSupervisor();
 async function gracefulShutdown(reason: string): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
+  stopCoverTraffic();
 
   const DRAIN_TIMEOUT_MS = config.shutdownDrainTimeoutMs;
   log("info", "shutdown_start", {
