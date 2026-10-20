@@ -538,6 +538,56 @@ export async function sendBatch(
     if (muxedCount > 0) noteSponsorshipCreated(muxedCount);
     return { hash: res.hash, ops: ops.length };
   });
+  const account = await (horizonServer as any).loadAccount(
+    relayerKeypair.publicKey(),
+  );
+  const builder = new StellarSdk.TransactionBuilder(account, {
+    fee: (10000 * ops.length).toString(),
+    networkPassphrase: config.networkPassphrase,
+  });
+  for (const op of ops) {
+    const asset = getAsset(op.asset);
+    builder.addOperation(
+      StellarSdk.Operation.payment({
+        destination: op.destination,
+        asset,
+        amount: canonicalizeStellarAmount(op.amount),
+      }),
+    );
+  }
+  const tx = builder.setTimeout(30).build();
+  await relayerKeyManager.signTransaction(tx);
+
+  // SPIKE-027: Enhanced error context for batch failures
+  try {
+    const res: any = await (horizonServer as any).submitTransaction(tx);
+    log("info", "batch_sent", { ops: ops.length, hash: res.hash });
+    if (muxedCount > 0) {
+      noteSponsorshipCreated(muxedCount);
+      const { sponsorshipReserveXlm: gauge } = await import("./metrics.js");
+      gauge.set(getSponsorshipReserveXlm());
+    }
+    return { hash: res.hash, ops: ops.length };
+  } catch (e: any) {
+    const data = e.response?.data || e.response?.body || e.message;
+    const extras = (data as any)?.extras;
+    const resultCodes = extras?.result_codes;
+
+    log("error", "batch_payment_failed", {
+      batchSize: ops.length,
+      error: JSON.stringify(data).slice(0, 1000),
+      resultCodes: resultCodes ? JSON.stringify(resultCodes) : undefined,
+    });
+
+    // Provide actionable error message with operation-level detail when available
+    throw new Error(
+      resultCodes
+        ? `Batch payment failed: ${JSON.stringify(resultCodes)}`
+        : typeof data === "string"
+          ? data
+          : JSON.stringify(data).slice(0, 500) || e.message
+    );
+  }
 }
 
 /**
@@ -557,6 +607,12 @@ export async function swapStrictSend(
   destination: string,
 ): Promise<{ hash: string }> {
   if (sendAsset === destAsset) throw new Error("Swap assets must be distinct");
+
+  // SPIKE-027: Validate slippage parameters before execution
+  if (!destMin || destMin === "0") {
+    throw new Error("Slippage protection required: destMin must be > 0");
+  }
+
   const sendA = getAsset(sendAsset);
   const destA = getAsset(destAsset);
   const canonicalSendAmount = canonicalizeStellarAmount(sendAmount);
@@ -593,6 +649,64 @@ export async function swapStrictSend(
     const res: any = await submitToHorizon(tx);
     return { hash: res.hash };
   });
+  const account = await (horizonServer as any).loadAccount(
+    relayerKeypair.publicKey(),
+  );
+  const tx = new StellarSdk.TransactionBuilder(account, {
+    fee: "10000",
+    networkPassphrase: config.networkPassphrase,
+  })
+    .addOperation(
+      StellarSdk.Operation.pathPaymentStrictSend({
+        sendAsset: sendA,
+        sendAmount: canonicalSendAmount,
+        destination,
+        destAsset: destA,
+        destMin: canonicalDestMin,
+        path: [],
+      } as any),
+    )
+    .setTimeout(30)
+    .build();
+  await relayerKeyManager.signTransaction(tx);
+
+  // SPIKE-027: Enhanced error handling for swap failures with slippage context
+  try {
+    const res: any = await (horizonServer as any).submitTransaction(tx);
+    log("info", "swap_executed", {
+      sendAsset,
+      destAsset,
+      sendAmount: canonicalSendAmount,
+      destMin: canonicalDestMin,
+      hash: res.hash,
+    });
+    return { hash: res.hash };
+  } catch (e: any) {
+    const data = e.response?.data || e.response?.body || e.message;
+    const extras = (data as any)?.extras;
+    const resultCodes = extras?.result_codes;
+
+    log("error", "swap_failed", {
+      sendAsset,
+      destAsset,
+      sendAmount: canonicalSendAmount,
+      destMin: canonicalDestMin,
+      error: JSON.stringify(data).slice(0, 1000),
+      resultCodes: resultCodes ? JSON.stringify(resultCodes) : undefined,
+    });
+
+    // Check if failure was due to slippage (path payment underfunded)
+    const isSlippageError = resultCodes?.operations?.includes("op_under_dest_min");
+    throw new Error(
+      isSlippageError
+        ? `Swap failed: slippage exceeded (received less than destMin ${destMin})`
+        : resultCodes
+          ? `Swap failed: ${JSON.stringify(resultCodes)}`
+          : typeof data === "string"
+            ? data
+            : JSON.stringify(data).slice(0, 500) || e.message
+    );
+  }
 }
 
 /**

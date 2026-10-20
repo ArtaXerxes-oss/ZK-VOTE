@@ -99,6 +99,23 @@ const envSchema = z.object({
     .enum(["true", "false"])
     .default("true")
     .transform((v) => v !== "false"),
+  // Relayer key lifecycle (#746)
+  RELAYER_ROTATION_DRAIN_WINDOW_MS: z.coerce.number().int().min(0).default(300000),
+  RELAYER_ROTATION_MIN_FUNDING_XLM: z.coerce.number().min(0).default(10),
+  RELAYER_KEY_MAX_AGE_DAYS: z.coerce.number().positive().default(90),
+  RELAYER_COMPROMISE_SLO_SECONDS: z.coerce.number().positive().default(300),
+  RELAYER_COMPROMISE_COOLDOWN_MS: z.coerce.number().int().min(0).default(600000),
+  RELAYER_SWEEP_SAFE_ACCOUNT: z
+    .string()
+    .regex(/^G[A-Z2-7]{55}$/, "RELAYER_SWEEP_SAFE_ACCOUNT must be a Stellar G... account")
+    .optional(),
+  RELAYER_SIGNING_TIERS_ENABLED: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((v) => v !== "false"),
+  RELAYER_TIER_LIMITS: z.string().optional(),
+  RELAYER_COSIGNER_KEYS: z.string().optional(),
+  RELAYER_BREAK_GLASS_SECRET: z.string().min(32).optional(),
   FRIENDBOT_URL: z.string().url().optional(),
   RELAYER_SIGNER_TYPE: z
     .enum(["local", "aws_kms", "gcp_kms", "pkcs11"])
@@ -184,6 +201,12 @@ const envSchema = z.object({
     .default("true")
     .transform((v) => v !== "false"),
   STRIP_REQUEST_BODIES: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
+  // Reject /vote without a wallet-session binding (#750). Off by default so
+  // the backend can ship before the frontend that sends it.
+  VOTE_SESSION_REQUIRED: z
     .enum(["true", "false"])
     .default("false")
     .transform((v) => v === "true"),
@@ -588,6 +611,17 @@ export const config = {
   relayerSecondaryPublicKey: validatedEnv.RELAYER_SECONDARY_PUBLIC_KEY,
   relayerMinBalanceXlm: validatedEnv.RELAYER_MIN_BALANCE_XLM,
   relayerAutoRotateLowBalance: validatedEnv.RELAYER_AUTO_ROTATE_LOW_BALANCE,
+  // Relayer key lifecycle (#746)
+  relayerRotationDrainWindowMs: validatedEnv.RELAYER_ROTATION_DRAIN_WINDOW_MS,
+  relayerRotationMinFundingXlm: validatedEnv.RELAYER_ROTATION_MIN_FUNDING_XLM,
+  relayerKeyMaxAgeDays: validatedEnv.RELAYER_KEY_MAX_AGE_DAYS,
+  relayerCompromiseSloSeconds: validatedEnv.RELAYER_COMPROMISE_SLO_SECONDS,
+  relayerCompromiseCooldownMs: validatedEnv.RELAYER_COMPROMISE_COOLDOWN_MS,
+  relayerSweepSafeAccount: validatedEnv.RELAYER_SWEEP_SAFE_ACCOUNT,
+  relayerSigningTiersEnabled: validatedEnv.RELAYER_SIGNING_TIERS_ENABLED,
+  relayerTierLimits: validatedEnv.RELAYER_TIER_LIMITS,
+  relayerCosignerKeys: validatedEnv.RELAYER_COSIGNER_KEYS,
+  relayerBreakGlassSecret: validatedEnv.RELAYER_BREAK_GLASS_SECRET,
   friendbotUrl: validatedEnv.FRIENDBOT_URL,
   relayerSignerType: validatedEnv.RELAYER_SIGNER_TYPE,
   relayerPublicKey: validatedEnv.RELAYER_PUBLIC_KEY,
@@ -688,6 +722,7 @@ export const config = {
   logClientIp: validatedEnv.LOG_CLIENT_IP,
   logRequestBody: validatedEnv.LOG_REQUEST_BODY,
   stripRequestBodies: validatedEnv.STRIP_REQUEST_BODIES,
+  voteSessionRequired: validatedEnv.VOTE_SESSION_REQUIRED,
   logSampleRate: validatedEnv.LOG_SAMPLE_RATE,
   genericErrors: validatedEnv.RELAYER_GENERIC_ERRORS,
   healthExposeDetails: validatedEnv.HEALTH_EXPOSE_DETAILS,

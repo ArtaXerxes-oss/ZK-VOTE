@@ -7,10 +7,16 @@
  */
 
 import { z } from "zod";
+import { extendZodWithOpenApi } from "@asteasolutions/zod-to-openapi";
 import { createHash } from "node:crypto";
 import sharp from "sharp";
 import { ALLOWED_IMAGE_MIMES, BN254_MODULUS } from "../config.js";
 import { BN254_FQ_MODULUS } from "../types/index.js";
+
+// The payment schemas below call .openapi() at module load. openapi.ts also
+// extends zod, but ESM evaluates this module first whenever something imports
+// it directly (routes, tests), so extend here too. Idempotent (#750).
+extendZodWithOpenApi(z);
 
 async function fileTypeFromBuffer(
   buffer: Buffer,
@@ -1333,6 +1339,35 @@ export const adminRelayerRotateSchema = z.object({
   targetKeyId: z.string().optional(),
   targetPublicKey: z.string().optional(),
   reason: z.string().max(500).optional(),
+  actor: z.string().min(1).max(100).optional(),
+});
+
+// Relayer key lifecycle (#746)
+const operatorId = z.string().min(1).max(100);
+// `${cosignerId}.${expiresAtMs}.${hmacHex}` — see issueActionApproval.
+const cosignerApproval = z.string().regex(/^[\w-]{1,64}\.\d{10,16}\.[0-9a-f]{64}$/);
+
+export const adminRelayerRotationActionSchema = z.object({
+  actor: operatorId.optional(),
+  reason: z.string().max(500).optional(),
+});
+
+export const adminRelayerCompromiseSchema = z.object({
+  key: z.string().min(1).max(100),
+  declaredBy: operatorId,
+  reason: z.string().min(1).max(500),
+  confirmation: cosignerApproval.optional(),
+});
+
+export const adminRelayerSweepSchema = z.object({
+  key: z.string().min(1).max(100),
+  requestedBy: operatorId,
+  confirmation: cosignerApproval,
+});
+
+export const adminRelayerHaltSchema = z.object({
+  reason: z.string().min(1).max(500),
+  actor: operatorId.optional(),
 });
 
 export const adminRelayerRegisterKeySchema = z.object({

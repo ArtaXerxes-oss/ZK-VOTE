@@ -3,6 +3,10 @@
  * Tracks mirroring lag and cross-chain state consistency
  */
 
+import { createLogger } from './logger.js'
+
+const logger = createLogger('bridge-monitor')
+
 export interface ChainState {
   chain: 'soroban' | 'evm'
   blockHeight: number
@@ -139,7 +143,7 @@ export class BridgeMonitor {
    * Trigger mirror operation
    */
   async triggerMirror(type: 'membership' | 'proposal'): Promise<void> {
-    console.log(`Triggering ${type} mirror operation...`)
+    logger.info('bridge_mirror_started', { type })
     
     if (!this.sorobanState) {
       throw new Error('Soroban state not available')
@@ -148,7 +152,7 @@ export class BridgeMonitor {
     // In production, would submit cross-chain message via bridge
     await this.sleep(2000)
     
-    console.log(`${type} mirrored successfully`)
+    logger.info('bridge_mirror_complete', { type })
   }
 
   private sleep(ms: number): Promise<void> {

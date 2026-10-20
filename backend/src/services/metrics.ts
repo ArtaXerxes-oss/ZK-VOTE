@@ -12,6 +12,13 @@ import {
   Gauge,
   collectDefaultMetrics,
 } from "prom-client";
+// Imported first: patches prom-client so every metric below is budget-guarded
+// (#749). See metric-cardinality.ts for the label policy.
+import {
+  BANNED_LABELS,
+  auditRegistry,
+  installCardinalityGuard,
+} from "./metric-cardinality.js";
 
 // ============================================
 // REGISTRY
@@ -70,27 +77,49 @@ export const httpResponseSize = new Histogram({
 });
 
 // ============================================
-// COALESCING METRICS
+// COALESCING METRICS (Bounded cardinality)
 // ============================================
+
+/**
+ * Normalise SingleFlight / coalescing deduplication key to a bounded operation category.
+ * Prevents dynamic IDs (daoId, proposalId) from creating unbounded metric series.
+ */
+export function normalizeCoalesceKey(key: string): string {
+  if (!key) return "unknown";
+  const prefix = key.split(":")[0];
+  switch (prefix) {
+    case "proposal":
+    case "root":
+    case "root-history":
+    case "daos":
+    case "comments":
+    case "comment":
+    case "membership":
+    case "sync":
+      return prefix;
+    default:
+      return "other";
+  }
+}
 
 export const coalescingHitsTotal = new Counter({
   name: "zkvote_coalescing_hits_total",
   help: "Total request coalescing hits",
-  labelNames: ["key"] as const,
+  labelNames: ["operation"] as const,
   registers: [register],
 });
 
 export const coalescingMissesTotal = new Counter({
   name: "zkvote_coalescing_misses_total",
   help: "Total request coalescing misses (original requests)",
-  labelNames: ["key"] as const,
+  labelNames: ["operation"] as const,
   registers: [register],
 });
 
 export const coalescingWaitTime = new Histogram({
   name: "zkvote_coalescing_wait_time_seconds",
   help: "Time spent waiting for coalesced requests in seconds",
-  labelNames: ["key"] as const,
+  labelNames: ["operation"] as const,
   buckets: [0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30],
   registers: [register],
 });
@@ -151,10 +180,24 @@ export const rpcPoolTotalEndpoints = new Gauge({
   registers: [register],
 });
 
+/**
+ * Normalise RPC endpoint URL to a bounded hostname or alias.
+ * Strips authentication tokens, query parameters, paths, and user info.
+ */
+export function normalizeEndpoint(rawUrl: string): string {
+  if (!rawUrl) return "unknown";
+  try {
+    const parsed = new URL(rawUrl);
+    return parsed.hostname + (parsed.port ? `:${parsed.port}` : "");
+  } catch {
+    return rawUrl.split("?")[0].split("/")[0] || "unknown";
+  }
+}
+
 export const rpcEndpointLatency = new Gauge({
   name: "zkvote_rpc_endpoint_latency_seconds",
   help: "RPC endpoint latency in seconds",
-  labelNames: ["url"] as const,
+  labelNames: ["endpoint"] as const,
   registers: [register],
 });
 
@@ -645,7 +688,6 @@ export const wsMessageDuration = new Histogram({
 export const wsRateLimitTotal = new Counter({
   name: "zkvote_ws_rate_limit_total",
   help: "Total WebSocket connections blocked by rate limiting",
-  labelNames: ["ip"] as const,
   registers: [register],
 });
 
@@ -656,7 +698,7 @@ export const wsRateLimitTotal = new Counter({
 export const relayerKeyBalance = new Gauge({
   name: "zkvote_relayer_key_balance_xlm",
   help: "Current balance of relayer keys in XLM",
-  labelNames: ["key_id", "role"] as const,
+  labelNames: ["role"] as const,
   registers: [register],
 });
 
@@ -670,14 +712,125 @@ export const relayerKeyRotationsTotal = new Counter({
 export const relayerKeyAgeSeconds = new Gauge({
   name: "zkvote_relayer_key_age_seconds",
   help: "Age of relayer key in seconds since activation",
-  labelNames: ["key_id"] as const,
+  labelNames: ["role"] as const,
   registers: [register],
 });
 
 export const relayerKeyTransactionsTotal = new Counter({
   name: "zkvote_relayer_key_transactions_total",
-  help: "Total transactions signed by relayer key",
-  labelNames: ["key_id"] as const,
+  help: "Total transactions signed by relayer key role",
+  labelNames: ["role"] as const,
+  registers: [register],
+});
+
+// ── Relayer key lifecycle (#746) ────────────────────────────────────────────
+
+let activeKeyActivatedAt: () => string | null = () => null;
+
+/**
+ * Register where the active key's activation time comes from. Only the
+ * process-wide relayerKeyManager calls this; test fixtures with their own
+ * managers must not take over the process gauge.
+ */
+export function setActiveKeyAgeSource(source: () => string | null): void {
+  activeKeyActivatedAt = source;
+}
+
+// Computed at scrape time: an untouched key must keep ageing, or the
+// rotation-overdue alert never fires for exactly the key nobody rotates.
+export const relayerActiveKeyAgeSeconds = new Gauge({
+  name: "zkvote_relayer_active_key_age_seconds",
+  help: "Seconds since the currently active relayer identity was activated",
+  registers: [register],
+  collect() {
+    const at = activeKeyActivatedAt();
+    this.set(at ? Math.max(0, Math.floor((Date.now() - Date.parse(at)) / 1000)) : 0);
+  },
+});
+
+export const relayerKeyMaxAgeSeconds = new Gauge({
+  name: "zkvote_relayer_key_max_age_seconds",
+  help: "Configured maximum active-key age before rotation is overdue (RELAYER_KEY_MAX_AGE_DAYS)",
+  registers: [register],
+});
+
+export const relayerFundedStandbyKeys = new Gauge({
+  name: "zkvote_relayer_funded_standby_keys",
+  help: "Standby relayer keys with a verified balance at or above the minimum",
+  registers: [register],
+});
+
+export const relayerDrainingKeys = new Gauge({
+  name: "zkvote_relayer_draining_keys",
+  help: "Relayer identities currently inside a dual-identity drain window",
+  registers: [register],
+});
+
+export const relayerSigningRefusedTotal = new Counter({
+  name: "zkvote_relayer_signing_refused_total",
+  help: "Relayer signatures refused, by reason (identity fencing, tier policy, halt)",
+  labelNames: ["reason"] as const,
+  registers: [register],
+});
+
+export const relayerSigningTierTotal = new Counter({
+  name: "zkvote_relayer_signing_tier_total",
+  help: "Relayer signatures by signing tier",
+  labelNames: ["tier"] as const,
+  registers: [register],
+});
+
+export const relayerSigningHalted = new Gauge({
+  name: "zkvote_relayer_signing_halted",
+  help: "1 while a co-signer halt is stopping all non-sweep relayer signing",
+  registers: [register],
+});
+
+export const relayerRotationPhase = new Gauge({
+  name: "zkvote_relayer_rotation_phase",
+  help: "1 for the current relayer rotation phase, 0 otherwise",
+  labelNames: ["phase"] as const,
+  registers: [register],
+});
+
+export const relayerRotationsCompletedTotal = new Counter({
+  name: "zkvote_relayer_rotations_completed_total",
+  help: "Relayer rotations by kind (planned, compromise) and outcome",
+  labelNames: ["kind", "outcome"] as const,
+  registers: [register],
+});
+
+export const relayerRotationDurationSeconds = new Histogram({
+  name: "zkvote_relayer_rotation_duration_seconds",
+  help: "Time from rotation start to cutover",
+  labelNames: ["kind"] as const,
+  buckets: [0.1, 0.5, 1, 5, 15, 30, 60, 120, 300, 600],
+  registers: [register],
+});
+
+export const relayerCompromiseTimeToRotatedSeconds = new Gauge({
+  name: "zkvote_relayer_compromise_time_to_rotated_seconds",
+  help: "Declaration-to-rotated time of the most recent compromise response",
+  registers: [register],
+});
+
+export const relayerCompromiseSloBreachesTotal = new Counter({
+  name: "zkvote_relayer_compromise_slo_breaches_total",
+  help: "Compromise responses slower than RELAYER_COMPROMISE_SLO_SECONDS",
+  registers: [register],
+});
+
+export const relayerCompromiseDeclarationsTotal = new Counter({
+  name: "zkvote_relayer_compromise_declarations_total",
+  help: "Relayer key compromise declarations by outcome",
+  labelNames: ["outcome"] as const,
+  registers: [register],
+});
+
+export const relayerSweepsTotal = new Counter({
+  name: "zkvote_relayer_sweeps_total",
+  help: "Compromise sweeps of a relayer account to the safe account, by outcome",
+  labelNames: ["outcome"] as const,
   registers: [register],
 });
 
@@ -738,10 +891,27 @@ export const unauthenticated_rejection_total = new Counter({
   registers: [register],
 });
 
+/**
+ * Normalise target resource to a bounded category.
+ * Prevents dynamic resource IDs/paths from expanding Prometheus cardinality.
+ */
+export function normalizeResourceType(resource: string): string {
+  if (!resource) return "unknown";
+  const lower = resource.toLowerCase();
+  if (lower.startsWith("dao")) return "dao";
+  if (lower.startsWith("proposal")) return "proposal";
+  if (lower.startsWith("key") || lower.startsWith("secret")) return "key";
+  if (lower.startsWith("comment")) return "comment";
+  if (lower.startsWith("membership") || lower.startsWith("voter")) return "membership";
+  if (lower.startsWith("session")) return "session";
+  if (lower.startsWith("registry")) return "registry";
+  return "unknown";
+}
+
 export const cross_tenant_denial_total = new Counter({
   name: "zkvote_cross_tenant_denial_total",
   help: "Total access attempts denied due to cross-tenant or cross-DAO resource isolation policies",
-  labelNames: ["tenant_id", "target_resource", "reason"] as const,
+  labelNames: ["resource_type", "reason"] as const,
   registers: [register],
 });
 
@@ -749,6 +919,12 @@ export const reconciliation_mismatch_total = new Counter({
   name: "zkvote_reconciliation_mismatch_total",
   help: "Total reconciliation mismatches detected between SQLite state, relayer events, and on-chain Soroban ledger state",
   labelNames: ["component", "mismatch_type"] as const,
+  registers: [register],
+});
+
+export const coverTrafficScheduledTotal = new Counter({
+  name: "zkvote_cover_traffic_scheduled_total",
+  help: "Cover-traffic slots the scheduler fired (no dummy is sent yet)",
   registers: [register],
 });
 
@@ -896,3 +1072,51 @@ export const outboxLagGauge = new Gauge({
   labelNames: ["channel"] as const,
   registers: [register],
 });
+
+// ============================================
+// METRICS CARDINALITY GOVERNANCE & AUDIT (#749)
+// ============================================
+
+/**
+ * High-cardinality and attacker-controlled label dimensions banned from
+ * Prometheus metrics. The policy (bounds, budgets, runtime guard) lives in
+ * metric-cardinality.ts; any metric declaring one of these fails the CI gate.
+ */
+export const PROHIBITED_METRIC_LABELS: ReadonlySet<string> = new Set(
+  Object.keys(BANNED_LABELS),
+);
+
+export interface CardinalityAuditResult {
+  valid: boolean;
+  totalMetrics: number;
+  violations: Array<{
+    metric: string;
+    reason: string;
+    labels?: string[];
+  }>;
+}
+
+/**
+ * Audits the registry against cardinality governance rules: no prohibited
+ * labels, every label declared with a bound, live children within each
+ * metric's budget, and modeled samples within the global budget.
+ */
+export async function auditRegistryCardinality(
+  customRegister: Registry = register,
+): Promise<CardinalityAuditResult> {
+  const report = auditRegistry(customRegister);
+  const labelsOf = new Map(report.metrics.map((m) => [m.name, m.labels]));
+  return {
+    valid: report.violations.length === 0,
+    totalMetrics: report.metrics.length,
+    violations: report.violations.map((v) => ({
+      metric: v.metric,
+      reason: `${v.rule}: ${v.detail}`,
+      labels: labelsOf.get(v.metric),
+    })),
+  };
+}
+
+// Bind the guard to this registry last, so it sees every metric above and
+// repairs any constructed before prom-client was patched.
+installCardinalityGuard(register);

@@ -9,6 +9,7 @@
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { config, BN254_SCALAR_FIELD } from "../config.js";
 import { log, logger } from "./logger.js";
+import { createCoverTrafficScheduler } from "./cover-traffic.js";
 import { getMetadata, setMetadata } from "./db.js";
 import {
   rpcCallsTotal,
@@ -17,7 +18,9 @@ import {
   rpcPoolHealthyEndpoints,
   rpcPoolTotalEndpoints,
   rpcEndpointLatency,
+  normalizeEndpoint,
   sequenceRecoveriesTotal,
+  coverTrafficScheduledTotal,
   sequenceMismatchesTotal,
   sequenceRecoveryDuration,
   sequenceHealthStatus,
@@ -27,6 +30,7 @@ import {
   endpointHealthy,
   endpointLedgerLag,
   endpointStaleRejectedTotal,
+  relayerKeyMaxAgeSeconds,
 } from "./metrics.js";
 import {
   arbitrate,
@@ -275,9 +279,16 @@ export class SequenceManager {
     sequenceHealthStatus.set(1);
   }
 
+  // Sequence numbers belong to one account; after a rotation the persisted
+  // value of the previous identity must not be read back for the new one
+  // (#746), so the key includes the relayer public key.
+  private metadataKey(): string {
+    return `relayer_last_sequence:${relayerKeypair.publicKey()}`;
+  }
+
   private loadPersisted(): string | null {
     try {
-      return getMetadata<string>("relayer_last_sequence");
+      return getMetadata<string>(this.metadataKey());
     } catch {
       return null;
     }
@@ -285,7 +296,7 @@ export class SequenceManager {
 
   private persist(seq: string): void {
     try {
-      setMetadata("relayer_last_sequence", seq);
+      setMetadata(this.metadataKey(), seq);
     } catch {
       // Non-fatal: SQLite may be unavailable during tests
     }
@@ -403,6 +414,103 @@ relayerKeyManager.onRotate(async (newKey, oldKey, trigger) => {
     oldPublicKey: oldKey?.publicKey,
     role: newKey.role,
   });
+});
+
+// ============================================
+// RELAYER KEY LIFECYCLE (#746)
+// ============================================
+
+/** Signing tiers + co-signer approvals + halt, enforced on every signature. */
+export const relayerSigningPolicy = new SigningPolicy({
+  limits: parseTierLimits(config.relayerTierLimits || DEFAULT_TIER_LIMITS),
+  cosigners: parseCosigners(config.relayerCosignerKeys),
+  breakGlassSecret: config.relayerBreakGlassSecret,
+  sweepSafeAccount: config.relayerSweepSafeAccount,
+  tiersEnabled: config.relayerSigningTiersEnabled ?? true,
+});
+relayerKeyManager.setSigningPolicy(relayerSigningPolicy);
+relayerKeyManager.setDrainWindowMs(config.relayerRotationDrainWindowMs ?? 300_000);
+relayerKeyMaxAgeSeconds.set((config.relayerKeyMaxAgeDays ?? 90) * 86_400);
+
+export const relayerKeyLifecycleStore = new SqliteKeyLifecycleStore(() => getWriteDb());
+
+// A key declared compromised in an earlier process stays revoked even if its
+// secret is still configured.
+try {
+  const applied = relayerKeyManager.applyPersistedRevocations(
+    relayerKeyLifecycleStore.loadRevocations(),
+  );
+  if (applied.length > 0) {
+    log("warn", "relayer_persisted_revocations_applied", { keyIds: applied });
+  }
+} catch (err) {
+  log("error", "relayer_revocations_load_failed", { error: (err as Error).message });
+}
+
+const STROOPS_PER_XLM = 10_000_000n;
+
+function stroopsToXlmString(stroops: bigint): string {
+  const whole = stroops / STROOPS_PER_XLM;
+  const frac = (stroops % STROOPS_PER_XLM).toString().padStart(7, "0");
+  return `${whole}.${frac}`;
+}
+
+async function loadAccountEntry(publicKey: string) {
+  try {
+    return await (server as any).getAccountEntry(publicKey);
+  } catch (err) {
+    if (/not found/i.test((err as Error).message)) return null;
+    throw err;
+  }
+}
+
+export const relayerRotation = new RelayerRotationOrchestrator({
+  keyManager: relayerKeyManager,
+  policy: relayerSigningPolicy,
+  store: relayerKeyLifecycleStore,
+  // Cutover runs inside the sequence lock: no transaction is mid-build
+  // against the old account while the active identity changes.
+  fence: (fn) => withSequenceLock(fn),
+  isQuiescent: () => getPendingSequenceLockOps() === 0,
+  getBalanceXlm: async (publicKey) => {
+    if (config.testMode) {
+      return relayerKeyManager.findKey(publicKey)?.balanceXlm ?? null;
+    }
+    const entry = await loadAccountEntry(publicKey);
+    if (!entry) return null;
+    return Number(BigInt(entry.balance().toString())) / 1e7;
+  },
+  verifyIdentity: async () => {
+    sequenceManager.markDirty();
+    if (!config.testMode) {
+      await sequenceManager.forceResync(server as StellarSdk.rpc.Server);
+    }
+  },
+  loadSweepAccount: async (publicKey) => {
+    const entry = await loadAccountEntry(publicKey);
+    if (!entry) throw new Error(`Account ${publicKey} no longer exists`);
+    return {
+      account: new StellarSdk.Account(publicKey, entry.seqNum().toString()),
+      nativeBalance: stroopsToXlmString(BigInt(entry.balance().toString())),
+      subentryCount: Number(entry.numSubEntries()),
+    };
+  },
+  submit: async (tx) => {
+    const res = await (server as StellarSdk.rpc.Server).sendTransaction(tx);
+    if (res.status === "ERROR") {
+      throw new Error(`Sweep submission failed: ${JSON.stringify(res.errorResult)}`);
+    }
+    return { hash: res.hash };
+  },
+  networkPassphrase: config.networkPassphrase,
+  settings: {
+    drainWindowMs: config.relayerRotationDrainWindowMs ?? 300_000,
+    minFundingXlm: config.relayerRotationMinFundingXlm ?? 10,
+    compromiseSloSeconds: config.relayerCompromiseSloSeconds ?? 300,
+    compromiseCooldownMs: config.relayerCompromiseCooldownMs ?? 600_000,
+    sweepSafeAccount: config.relayerSweepSafeAccount,
+    maxKeyAgeDays: config.relayerKeyMaxAgeDays ?? 90,
+  },
 });
 
 export async function withSequenceLock<T>(fn: () => Promise<T>): Promise<T> {
@@ -613,6 +721,11 @@ export class RpcPoolManager {
     );
     if (!recent) await this.checkHealth();
   }
+      // Update Prometheus gauges per endpoint (host only, #749)
+      rpcEndpointLatency.set(
+        { endpoint: normalizeEndpoint(ep.url) },
+        ep.latencyMs / 1000,
+      );
 
   /**
    * Read state that feeds a proof witness from up to `quorum` fresh
@@ -1435,29 +1548,25 @@ export async function submitTransactionWithRecovery(
 }
 
 // Compatibility stubs for voting route (relocated from threshold-coordinator)
+// Cover traffic is scheduled as a Poisson process (mean 50s, i.e. the previous
+// 10%-per-5s rate) and only logs/counts today: sending dummy transactions needs
+// an approved fee budget (SPIKE-025, docs/spikes/SPIKE-025-rate-limit-cover-traffic.md).
+const COVER_TRAFFIC_MEAN_INTERVAL_MS = 50_000;
+const COVER_AMOUNT = "0.0001";
+const coverTraffic = createCoverTrafficScheduler({
+  meanIntervalMs: COVER_TRAFFIC_MEAN_INTERVAL_MS,
+  onTick: () => {
+    coverTrafficScheduledTotal.inc();
+    log("info", "cover_traffic_scheduled", { amount: COVER_AMOUNT });
+  },
+});
+
 export function scheduleCoverTraffic(): void {
-  // Schedule cover traffic to obfuscate vote timing patterns
-  // Uses Poisson distribution to send dummy XLM transactions at random intervals
-  const COVER_TRAFFIC_INTERVAL_MS = 5000; // Check every 5 seconds
-  const COVER_TRAFFIC_PROBABILITY = 0.1; // 10% chance per check
-  const COVER_AMOUNT = "0.0001"; // Small XLM amount for cover traffic
+  if (!config.testMode) coverTraffic.start();
+}
 
-  if (!config.testMode) {
-    const intervalId = setInterval(() => {
-      if (Math.random() < COVER_TRAFFIC_PROBABILITY) {
-        log("info", "cover_traffic_scheduled", {
-          amount: COVER_AMOUNT,
-          timestamp: new Date().toISOString(),
-        });
-        // In production, this would send a small XLM transaction to a cover address
-        // via the WebSocket broadcast to all connected clients
-        // The actual implementation would integrate with the confirmation hub
-      }
-    }, COVER_TRAFFIC_INTERVAL_MS);
-
-    // Store interval ID for cleanup on shutdown
-    (globalThis as any).__coverTrafficInterval = intervalId;
-  }
+export function stopCoverTraffic(): void {
+  coverTraffic.stop();
 }
 
 export function monitorMissingVotes(): void {}
