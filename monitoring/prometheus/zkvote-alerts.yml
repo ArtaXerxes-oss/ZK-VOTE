@@ -179,3 +179,159 @@ groups:
             This is the canonical signal for a testnet/network reset.  Execute the
             network-reset runbook immediately: stop the relayer, wipe processed_events,
             remove the horizon cursor file, then restart and verify sequence is climbing.
+
+  # ── Product SLI/SLO alerts (SPIKE-049) ─────────────────────────────────────
+  #
+  # The alerts below cover the user-visible journeys that were previously
+  # unmonitored: vote inclusion latency, ZK proving success rate, anchor
+  # settlement aging, and PII-in-logs detection.
+  #
+  # Runbooks:
+  #   VoteInclusionLatencyHigh  → check relayer queue depth, Stellar congestion,
+  #                               fee-bump pipeline; escalate to on-call if >15 min
+  #   ProvingSuccessRateLow     → check prover worker logs, circuit WASM hash vs
+  #                               registry pin, WebWorker memory pressure
+  #   AnchorSettlementStale     → check bridge relayer, EVM RPC endpoint, gas price
+  #   PIIDetectedInLogs         → page security on-call immediately; rotate log
+  #                               storage credentials; purge affected log batch
+
+  - name: zkvote-product-slo
+    rules:
+      - alert: ZKVoteVoteInclusionLatencyHigh
+        # SLO: 95% of votes should be included within 30 seconds of submission.
+        # zkvote_vote_inclusion_latency_seconds tracks time from relayer receipt
+        # to on-chain confirmation.
+        expr: >
+          histogram_quantile(0.95,
+            sum by (le) (rate(zkvote_vote_inclusion_latency_seconds_bucket[10m]))
+          ) > 30
+        for: 5m
+        labels:
+          severity: warning
+          service: zkvote-relayer
+          slo: vote_inclusion
+        annotations:
+          summary: Vote inclusion p95 latency exceeds 30-second SLO
+          description: >
+            The 95th-percentile vote inclusion latency has exceeded 30 seconds for 5
+            minutes. Check the relayer submission queue, Stellar congestion, and the
+            fee-bump pipeline.
+
+      - alert: ZKVoteVoteInclusionLatencyCritical
+        expr: >
+          histogram_quantile(0.95,
+            sum by (le) (rate(zkvote_vote_inclusion_latency_seconds_bucket[10m]))
+          ) > 900
+        for: 5m
+        labels:
+          severity: critical
+          service: zkvote-relayer
+          slo: vote_inclusion
+        annotations:
+          summary: Vote inclusion p95 latency exceeds 15-minute critical threshold
+          description: >
+            The 95th-percentile vote inclusion latency has exceeded 15 minutes for 5
+            minutes. Votes may be silently dropped or stuck in the submission queue.
+            Escalate to on-call immediately.
+
+      - alert: ZKVoteProvingSuccessRateLow
+        # SLO: ZK proof generation should succeed at ≥99% of attempts.
+        # zkvote_prove_total{result="success|failure"} tracks prover outcomes.
+        expr: >
+          sum(rate(zkvote_prove_total{result="success"}[10m])) /
+          clamp_min(sum(rate(zkvote_prove_total[10m])), 0.001) < 0.99
+        for: 5m
+        labels:
+          severity: warning
+          service: zkvote-prover
+          slo: proving_success
+        annotations:
+          summary: ZK proving success rate has dropped below 99% SLO
+          description: >
+            Fewer than 99% of ZK proof attempts are succeeding over the last 10
+            minutes. Check prover worker logs, WASM circuit hash against the circuit
+            registry pin, and WebWorker memory pressure.
+
+      - alert: ZKVoteProvingSuccessRateCritical
+        expr: >
+          sum(rate(zkvote_prove_total{result="success"}[10m])) /
+          clamp_min(sum(rate(zkvote_prove_total[10m])), 0.001) < 0.90
+        for: 3m
+        labels:
+          severity: critical
+          service: zkvote-prover
+          slo: proving_success
+        annotations:
+          summary: ZK proving success rate has collapsed below 90%
+          description: >
+            Fewer than 90% of ZK proof attempts are succeeding. The voting feature
+            is effectively broken for most users. Escalate to on-call immediately
+            and consider disabling the frontend proving flow.
+
+      - alert: ZKVoteAnchorSettlementStale
+        # SLO: Bridge anchor settlements should complete within 10 minutes of
+        # EVM event emission.
+        # zkvote_anchor_settlement_age_seconds tracks age of the oldest unsettled anchor.
+        expr: zkvote_anchor_settlement_age_seconds > 600
+        for: 5m
+        labels:
+          severity: warning
+          service: zkvote-bridge
+          slo: anchor_settlement
+        annotations:
+          summary: Bridge anchor settlement is aging beyond 10-minute SLO
+          description: >
+            The oldest unsettled bridge anchor is more than 10 minutes old. Check the
+            bridge relayer, EVM RPC endpoint health, and gas price estimates.
+
+      - alert: ZKVoteAnchorSettlementCritical
+        expr: zkvote_anchor_settlement_age_seconds > 3600
+        for: 5m
+        labels:
+          severity: critical
+          service: zkvote-bridge
+          slo: anchor_settlement
+        annotations:
+          summary: Bridge anchor settlement stalled for over 1 hour
+          description: >
+            A bridge anchor has been unsettled for over 1 hour. Cross-chain votes
+            submitted through the bridge are not being recorded. Escalate immediately.
+
+      - alert: ZKVotePIIDetectedInLogs
+        # zkvote_pii_log_detections_total is incremented by the log-scrubber
+        # middleware whenever a raw IP address, Stellar address (G.../S...), or
+        # full nullifier value is detected in a log line that was not redacted.
+        # Any non-zero rate is a policy violation requiring immediate response.
+        expr: sum(rate(zkvote_pii_log_detections_total[5m])) > 0
+        for: 1m
+        labels:
+          severity: critical
+          service: zkvote-relayer
+          pii: "true"
+        annotations:
+          summary: PII detected in application logs — immediate action required
+          description: >
+            The log-scrubber middleware has detected unredacted PII (voter IP,
+            Stellar address, nullifier, or other sensitive field) in application
+            logs. Page the security on-call immediately. Rotate log storage
+            credentials and purge the affected log batch before sharing with
+            any third party.
+
+      - alert: ZKVoteDevRelayerObservabilityGap
+        # Detects when the dev:relayer process is running but emitting zero
+        # metrics — a sign the observability instrumentation is not active in
+        # the local development profile (SPIKE-049).
+        expr: >
+          up{job="zkvote-dev-relayer"} == 1
+          and sum(rate(zkvote_http_requests_total{env="development"}[5m])) == 0
+        for: 10m
+        labels:
+          severity: warning
+          service: zkvote-relayer
+        annotations:
+          summary: dev:relayer is running but emitting no metrics
+          description: >
+            The development relayer process is running but the Prometheus scrape
+            target shows no request metrics. The metrics middleware may not be
+            registered in the development profile. Developers will not see the
+            observability signals that production depends on.
