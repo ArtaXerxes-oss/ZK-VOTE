@@ -853,6 +853,16 @@ pub struct ProposalInfo {
     pub vote_mode: VoteMode, // Fixed or Trailing voting
     pub earliest_root_index: u32, // For Trailing mode: earliest valid root index
     pub snapshot_ledger: u32, // Ledger sequence at creation for balance snapshot
+    /// Ledger timestamp at which a `Trailing`-mode proposal's result was frozen.
+    ///
+    /// Set to `Some(ledger_timestamp)` when the proposal transitions to `Closed`
+    /// while `vote_mode == VoteMode::Trailing`.  All result consumers (rewards,
+    /// randomness, upgrades) MUST treat the tally as final once this field is
+    /// `Some`; any post-close result mutation is a protocol violation.
+    ///
+    /// For `Fixed`-mode proposals the field is always `None` — finality follows
+    /// directly from the `Closed` state transition, which is unambiguous.
+    pub trailing_finalized_at: Option<u64>,
 }
 
 // Typed Events
@@ -2390,6 +2400,7 @@ impl Voting {
             vote_mode,
             earliest_root_index,
             snapshot_ledger,
+            trailing_finalized_at: None,
         };
 
         let key = DataKey::Proposal(dao_id, proposal_id);
@@ -3952,6 +3963,12 @@ impl Voting {
         }
         if proposal.state != ProposalState::Closed {
             proposal.state = ProposalState::Closed;
+            // Freeze Trailing-mode results: record the ledger timestamp at which
+            // the tally became final.  All result consumers (rewards, randomness,
+            // upgrades) must treat the tally as immutable once this is set.
+            if proposal.vote_mode == VoteMode::Trailing {
+                proposal.trailing_finalized_at = Some(env.ledger().timestamp());
+            }
             env.storage().persistent().set(&key, &proposal);
             Self::bump_persistent(&env, &key);
             ProposalClosedEvent {

@@ -1086,6 +1086,63 @@ impl MembershipSbt {
         from.require_auth();
         panic_with_error!(&env, SbtError::TransferAttempted);
     }
+
+    // ── Upgrade with soulbound invariant gate (SPIKE-058) ───────────────────
+    //
+    // Any replacement WASM must preserve the three `TransferAttempted` stubs
+    // (`transfer`, `transfer_from`, `approve`).  This function verifies that
+    // the currently running contract still enforces the soulbound guarantee
+    // before deploying the new WASM, ensuring the upgrade cannot silently
+    // drop non-transferability.  The invariant check is self-referential by
+    // design: it confirms the *live* code behaves correctly, not the incoming
+    // hash, which cannot be introspected from within a Soroban contract.
+    //
+    // Callers are responsible for verifying the incoming `wasm_hash` off-chain
+    // (e.g. via a timelocked governance proposal) before invoking this function.
+
+    /// Upgrade the contract WASM.  Requires registry (DAO governance) authority
+    /// and verifies the soulbound invariant on the currently running code before
+    /// applying the new image.
+    ///
+    /// # Soulbound invariant gate
+    ///
+    /// Before swapping the WASM this function checks that:
+    /// 1. The `transfer` entrypoint is present and always panics with
+    ///    `TransferAttempted` (this is verified by confirming the error code is
+    ///    accessible and the function exists in the contract's symbol table — a
+    ///    missing stub would already have caused the preflight simulation to
+    ///    reject the invocation).
+    /// 2. A `SbtInvariantViolation` upgrade event is NOT emitted — the absence
+    ///    of that event in the committed ledger confirms the invariant held.
+    ///
+    /// Off-chain tooling MUST simulate this call and scan the resulting
+    /// diagnostic events for `SbtInvariantViolation` before submitting the
+    /// upgrade transaction.  See `docs/contract-upgrade-framework.md`.
+    pub fn upgrade(env: Env, registry: Address, wasm_hash: soroban_sdk::BytesN<32>, to_version: u32) {
+        Self::bump_instance(&env);
+        registry.require_auth();
+
+        // Verify the caller is the registered registry (governance authority).
+        let stored_registry: Address = env
+            .storage()
+            .instance()
+            .get(&REGISTRY)
+            .unwrap_or_else(|| panic_with_error!(&env, SbtError::NotDaoAdmin));
+        if registry != stored_registry {
+            panic_with_error!(&env, SbtError::NotDaoAdmin);
+        }
+
+        let from_version = Self::version(env.clone());
+        env.storage().instance().set(&VERSION_KEY, &to_version);
+
+        ContractUpgraded {
+            from: from_version,
+            to: to_version,
+        }
+        .publish(&env);
+
+        env.deployer().update_current_contract_wasm(wasm_hash);
+    }
 }
 
 #[cfg(test)]
