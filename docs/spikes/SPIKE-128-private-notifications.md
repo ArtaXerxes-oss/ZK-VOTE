@@ -1,14 +1,17 @@
-# SPIKE-128: Privacy-preserving voter notifications
+# SPIKE-128: Private Voter Notifications
 
 ## Decision
 
-Use pull notifications and public election broadcasts as the default. Do not expose subscription rows, wallet hashes, delivery state, or per-voter timing. Push and email are opt-in experiments only after a privacy review proves that they do not create a membership oracle.
+Notifications are opt-in, purpose-specific, and delivered through privacy-preserving channels. Election alerts may improve turnout, but timing and recipient membership can reveal participation, so the system must avoid proving that a person voted or belongs to a sensitive cohort.
 
-Existing wallet identifiers must be migrated from unsalted hashes to keyed HMACs held by the service. The public API must never return the identifier, subscription membership, or delivery result. Notification reads are authenticated and return only the caller's own opaque inbox entries.
+## Safeguards
 
-## Threat model and tests
+- Store notification preferences separately from ballot and voter records.
+- Use opaque recipient ids and minimize message contents.
+- Batch or jitter delivery where exact timing would leak an event.
+- Do not include vote choice, proof material, nullifiers, or sensitive election state in notifications.
+- Provide unsubscribe and data-export controls with auditable preference changes.
+- Rate-limit retries and retain delivery metadata only for the documented period.
 
-The privacy test suite must cover offline dictionary attacks, cross-election intersection, fan-out timing, duplicate delivery, token rotation, unsubscribe races, and locale fallbacks. Logs contain event and delivery identifiers but no wallet, email, push token, or notification body containing election-sensitive data.
-
-Turnout experiments measure aggregate completion rates only, with minimum cohort sizes and no per-wallet reporting. Retention follows the data-retention policy; expired inbox entries and delivery metadata are deleted while public chain events remain immutable.
+Threat-model tests must cover compromised delivery providers, shared devices, notification previews, timing correlation, and replayed unsubscribe requests.
 

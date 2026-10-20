@@ -691,16 +691,11 @@ export const reconciliation_mismatch_total = new Counter({
   registers: [register],
 });
 
-export const rootFetchFailuresTotal = new Counter({
-  name: "zkvote_root_fetch_failures_total",
-  help: "GET /root/:daoId failures by reason (dao_id is on the metric_drilldown log, #749)",
-  labelNames: ["reason"] as const,
+export const coverTrafficScheduledTotal = new Counter({
+  name: "zkvote_cover_traffic_scheduled_total",
+  help: "Cover-traffic slots the scheduler fired (no dummy is sent yet)",
   registers: [register],
 });
-
-// camelCase aliases: registry-pin.ts imports these names.
-export const unauthenticatedRejectionTotal = unauthenticated_rejection_total;
-export const crossTenantDenialTotal = cross_tenant_denial_total;
 
 export const rate_limit_store_size = new Gauge({
   name: "zkvote_rate_limit_store_size",

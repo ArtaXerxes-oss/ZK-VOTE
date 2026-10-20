@@ -146,6 +146,12 @@ const envSchema = z.object({
     .enum(["true", "false"])
     .default("false")
     .transform((v) => v === "true"),
+  // Reject /vote without a wallet-session binding (#750). Off by default so
+  // the backend can ship before the frontend that sends it.
+  VOTE_SESSION_REQUIRED: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
   LOG_SAMPLE_RATE: z.coerce.number().min(0).max(1).optional(),
   RELAYER_GENERIC_ERRORS: z
     .enum(["true", "false"])
@@ -623,6 +629,7 @@ export const config = {
   logClientIp: validatedEnv.LOG_CLIENT_IP,
   logRequestBody: validatedEnv.LOG_REQUEST_BODY,
   stripRequestBodies: validatedEnv.STRIP_REQUEST_BODIES,
+  voteSessionRequired: validatedEnv.VOTE_SESSION_REQUIRED,
   logSampleRate: validatedEnv.LOG_SAMPLE_RATE,
   genericErrors: validatedEnv.RELAYER_GENERIC_ERRORS,
   healthExposeDetails: validatedEnv.HEALTH_EXPOSE_DETAILS,
