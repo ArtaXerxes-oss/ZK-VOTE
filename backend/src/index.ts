@@ -293,6 +293,10 @@ const corsOptions: cors.CorsOptions = {
     "X-Client-Id",
     "X-Master-Key",
     "X-CSRF-Token",
+    // Wallet-session binding for /vote (#750)
+    "X-Vote-Session",
+    "X-Vote-Session-Mac",
+    "X-Vote-Network",
   ],
   exposedHeaders: [
     "X-Token-Id",
