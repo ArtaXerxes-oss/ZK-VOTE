@@ -35,6 +35,11 @@ resolver = "2"
 soroban-sdk = "25.3.0"
 num-bigint = "0.4"
 
+# #727 — REPRODUCIBLE BUILDS
+# All flags below must stay identical to the values used inside
+# contracts/Dockerfile.build. Any divergence between a developer's local
+# build and the canonical container build will change WASM output and break
+# the audit trail recorded in .deployed-contracts*. See SPIKE-047 / #727.
 [profile.release]
 opt-level = "z"
 overflow-checks = true
