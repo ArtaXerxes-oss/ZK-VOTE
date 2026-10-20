@@ -67,6 +67,10 @@ import {
   stopConfirmationWorker,
 } from "./services/confirmation-queue.js";
 import {
+  startEndpointHealthMonitor,
+  stopEndpointHealthMonitor,
+} from "./services/endpoint-pool.js";
+import {
   attachConfirmationHub,
   closeConfirmationHub,
 } from "./services/confirmation-hub.js";
@@ -722,6 +726,11 @@ async function startBackgroundServices(): Promise<void> {
   // transaction-confirmation waits, with exponential backoff + jitter.
   startConfirmationWorker();
 
+  // Probe Horizon, Soroban RPC and anchor pools on one cadence so routing,
+  // finality-lag bounds and /health reflect live endpoint state (#745).
+  if (!config.testMode) {
+    startEndpointHealthMonitor(config.endpointHealthIntervalMs);
+  }
   // Closes relayer drain windows on time even when no admin call polls (#746).
   relayerRotation.startTicker();
 }
@@ -754,6 +763,7 @@ async function stopBackgroundServices(): Promise<void> {
   stopScheduledBackups();
   services.scheduler.stop();
   stopAuthScheduler();
+  stopEndpointHealthMonitor();
 
   // Drain any outstanding confirmation waits so callers never hang on exit.
   void stopConfirmationWorker();

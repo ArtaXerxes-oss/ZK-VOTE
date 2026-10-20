@@ -46,6 +46,7 @@ import { relayerKeyManager } from "../services/relayerKeyManager.js";
 
 import { rpcPoolManager, sequenceManager } from "../services/stellar.js";
 import { getAllCircuitBreakerMetrics } from "../services/circuit-breaker.js";
+import { getEndpointPoolStatuses } from "../services/endpoint-pool.js";
 import { getMemorySnapshot } from "../services/memory-monitor.js";
 import {
   getOverallHealth,
@@ -208,6 +209,8 @@ router.get("/health", async (req: Request, res: Response) => {
       ...rpc,
       pool: rpcPoolManager.getMetrics(),
     },
+    // Horizon + anchor pools (#745): per-endpoint eligibility, lag, breaker.
+    endpointPools: getEndpointPoolStatuses(),
     circuitBreakers: getAllCircuitBreakerMetrics(),
     services,
     memory: {

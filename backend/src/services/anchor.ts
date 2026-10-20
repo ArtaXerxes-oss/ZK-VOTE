@@ -3,31 +3,75 @@
  * Proxies to Circle/Tempo anchors; stores claimableBalance for pending
  */
 import { log } from "./logger.js";
+import { config } from "../config.js";
 import { canonicalizeStellarAmount } from "../utils/stellarAmount.js";
-import { 
-  minimizeKYCResponse, 
-  enforceMinimizationBoundary 
+import {
+  minimizeKYCResponse,
+  enforceMinimizationBoundary
 } from "./kycBoundary.js";
+import {
+  createEndpointPool,
+  HttpStatusError,
+  parseRetryAfterMs,
+  poolOptionsFromConfig,
+  type EndpointPool,
+  type OperationClass,
+} from "./endpoint-pool.js";
 
-const ANCHOR_USDC = process.env.ANCHOR_USDC_URL || "https://anchor.circle.com";
-const ANCHOR_EURC =
-  process.env.ANCHOR_EURC_URL || "https://anchor.eurc.circle.com";
+type AnchorAsset = "USDC" | "EURC";
 
-export function anchorFor(asset: "USDC" | "EURC"): string {
-  return asset === "USDC" ? ANCHOR_USDC : ANCHOR_EURC;
+// ── Anchor endpoint pools (#745) ─────────────────────────────────────────
+//
+// ANCHOR_<ASSET>_URLS lists mirrors of the SAME anchor operator (one SEP-1
+// organisation). Failing over to a different operator would hand the user's
+// funds to another counterparty, so that is deliberately not a fallback.
+// SEP-6 GETs are retried across mirrors; SEP-31 POSTs create a transfer and
+// are never retried once the anchor may have received them.
+
+async function probeAnchor(url: string): Promise<{}> {
+  const res = await fetch(new URL("/.well-known/stellar.toml", url));
+  if (!res.ok) {
+    throw new HttpStatusError(res.status, `Anchor SEP-1 returned HTTP ${res.status}`);
+  }
+  return {};
+}
+
+function createAnchorPool(asset: AnchorAsset, urls: string[]): EndpointPool<null> {
+  return createEndpointPool<null>({
+    dependency: `anchor_${asset.toLowerCase()}`,
+    serviceName: asset === "USDC" ? "anchor_usdc" : "anchor_eurc",
+    urls,
+    clientFactory: () => null,
+    probe: (_client, url) => probeAnchor(url),
+    ledgerAware: false,
+    ...poolOptionsFromConfig(config),
+  });
+}
+
+export const anchorPools: Record<AnchorAsset, EndpointPool<null>> = {
+  USDC: createAnchorPool("USDC", config.anchorUsdcUrls),
+  EURC: createAnchorPool("EURC", config.anchorEurcUrls),
+};
+
+/** Primary anchor URL for an asset (first configured mirror). */
+export function anchorFor(asset: AnchorAsset): string {
+  return anchorPools[asset].urls[0];
 }
 
 export function validateInteractiveUrl(
   value: unknown,
-  asset: "USDC" | "EURC",
+  asset: AnchorAsset,
 ): string {
   if (typeof value !== "string")
     throw new Error("Anchor interactive URL is missing");
   const candidate = new URL(value);
-  const configuredAnchor = new URL(anchorFor(asset));
+  // Any configured mirror of the asset's anchor may host the interactive flow.
+  const trustedOrigins = new Set(
+    anchorPools[asset].urls.map((url) => new URL(url).origin),
+  );
   if (
     candidate.protocol !== "https:" ||
-    candidate.origin !== configuredAnchor.origin ||
+    !trustedOrigins.has(candidate.origin) ||
     candidate.username ||
     candidate.password
   ) {
@@ -38,16 +82,16 @@ export function validateInteractiveUrl(
 
 export function sanitizeAnchorResponse(
   payload: unknown,
-  asset: "USDC" | "EURC",
+  asset: AnchorAsset,
 ): Record<string, unknown> {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     throw new Error("Anchor returned an invalid response");
   }
   const response = { ...(payload as Record<string, unknown>) };
-  
+
   // Enforce KYC boundary: detect excess fields before processing
   enforceMinimizationBoundary(response);
-  
+
   const rawInteractiveUrl =
     response.interactive_url ??
     (response.type === "interactive_customer_info_needed"
@@ -61,33 +105,49 @@ export function sanitizeAnchorResponse(
     if (response.type === "interactive_customer_info_needed")
       delete response.url;
   }
-  
+
   // Apply data minimization to KYC fields
   const minimized = minimizeKYCResponse(response);
-  
-  return minimized as Record<string, unknown>;
+
+  return minimized as unknown as Record<string, unknown>;
 }
 
-async function fetchAnchorJson(url: URL): Promise<unknown> {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Anchor returned HTTP ${res.status}`);
-  return res.json();
+async function fetchAnchorJson(
+  asset: AnchorAsset,
+  opClass: OperationClass,
+  path: string,
+  init: { search?: URLSearchParams; method?: string; body?: unknown } = {},
+): Promise<unknown> {
+  return anchorPools[asset].execute(opClass, async (_client, { url: base }) => {
+    const url = new URL(path, base);
+    if (init.search) url.search = init.search.toString();
+    const res = await fetch(url, {
+      method: init.method ?? "GET",
+      headers:
+        init.body === undefined ? undefined : { "Content-Type": "application/json" },
+      body: init.body === undefined ? undefined : JSON.stringify(init.body),
+    });
+    if (!res.ok) {
+      throw new HttpStatusError(
+        res.status,
+        `Anchor returned HTTP ${res.status}`,
+        parseRetryAfterMs(res.headers.get("retry-after")),
+      );
+    }
+    return res.json();
+  });
 }
 
 export async function sep6Deposit(
-  asset: "USDC" | "EURC",
+  asset: AnchorAsset,
   account: string,
   amount: string,
 ) {
-  const base = anchorFor(asset);
   const canonicalAmount = canonicalizeStellarAmount(amount);
-  const url = new URL("/sep6/deposit", base);
-  url.search = new URLSearchParams({
-    asset,
-    account,
-    amount: canonicalAmount,
-  }).toString();
-  const response = sanitizeAnchorResponse(await fetchAnchorJson(url), asset);
+  const payload = await fetchAnchorJson(asset, "read", "/sep6/deposit", {
+    search: new URLSearchParams({ asset, account, amount: canonicalAmount }),
+  });
+  const response = sanitizeAnchorResponse(payload, asset);
   log("info", "anchor_deposit", {
     asset,
     account: account.slice(0, 8) + "...",
@@ -97,21 +157,21 @@ export async function sep6Deposit(
 }
 
 export async function sep6Withdraw(
-  asset: "USDC" | "EURC",
+  asset: AnchorAsset,
   account: string,
   amount: string,
   dest: string,
 ) {
-  const base = anchorFor(asset);
   const canonicalAmount = canonicalizeStellarAmount(amount);
-  const url = new URL("/sep6/withdraw", base);
-  url.search = new URLSearchParams({
-    asset,
-    account,
-    amount: canonicalAmount,
-    dest,
-  }).toString();
-  const response = sanitizeAnchorResponse(await fetchAnchorJson(url), asset);
+  const payload = await fetchAnchorJson(asset, "read", "/sep6/withdraw", {
+    search: new URLSearchParams({
+      asset,
+      account,
+      amount: canonicalAmount,
+      dest,
+    }),
+  });
+  const response = sanitizeAnchorResponse(payload, asset);
   log("info", "anchor_withdraw", {
     asset,
     account: account.slice(0, 8) + "...",
@@ -120,12 +180,9 @@ export async function sep6Withdraw(
   return response;
 }
 
-export async function sep31Send(asset: "USDC" | "EURC", payload: any) {
-  const base = anchorFor(asset);
-  const res = await fetch(`${base}/sep31/transactions`, {
+export async function sep31Send(asset: AnchorAsset, payload: any) {
+  return fetchAnchorJson(asset, "submit_non_idempotent", "/sep31/transactions", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    body: payload,
   });
-  return res.json();
 }
