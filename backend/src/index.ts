@@ -60,6 +60,7 @@ import {
   relayerKeypair,
   getPendingSequenceLockOps,
   waitForSequenceLockIdle,
+  stopCoverTraffic,
 } from "./services/stellar.js";
 import {
   startConfirmationWorker,
@@ -500,6 +501,7 @@ const supervisor = new ServiceSupervisor();
 async function gracefulShutdown(reason: string): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
+  stopCoverTraffic();
 
   const DRAIN_TIMEOUT_MS = config.shutdownDrainTimeoutMs;
   log("info", "shutdown_start", {
