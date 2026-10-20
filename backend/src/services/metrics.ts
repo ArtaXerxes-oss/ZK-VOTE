@@ -632,6 +632,12 @@ export const reconciliation_mismatch_total = new Counter({
   registers: [register],
 });
 
+export const coverTrafficScheduledTotal = new Counter({
+  name: "zkvote_cover_traffic_scheduled_total",
+  help: "Cover-traffic slots the scheduler fired (no dummy is sent yet)",
+  registers: [register],
+});
+
 export const rate_limit_store_size = new Gauge({
   name: "zkvote_rate_limit_store_size",
   help: "Current number of tracked rate-limiting client keys in memory",
