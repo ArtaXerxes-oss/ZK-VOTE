@@ -37,6 +37,11 @@ interface VoteModalProps {
    * default — means the election uses the default circuit (#93).
    */
   merkleDepth?: number;
+  /** When present, use the encrypted-tally path (choice never public). */
+  encryption?: {
+    publicKey: { x: string; y: string };
+    epoch: number;
+  };
   daoId: number;
   publicKey: string;
   kit: StellarWalletsKit | null;
@@ -52,6 +57,7 @@ export default function VoteModal({
   voteMode,
   vkVersion: _vkVersion,
   merkleDepth = 0,
+  encryption,
   daoId,
   publicKey,
   kit,
@@ -73,6 +79,34 @@ export default function VoteModal({
     try {
       // Initialize contract clients
       const clients = getZkVoteClient(publicKey);
+
+      // ENCRYPTED TALLY (vote-choice privacy): the choice is encrypted
+      // client-side and only ciphertext reaches the relayer/ledger. The
+      // plaintext path below is retained for legacy proposals created before
+      // the encrypted circuit was registered.
+      if (encryption && !panicMode) {
+        setProgress("Encrypting ballot...");
+        setStep("submitting");
+        const result = await clients.orchestrateEncryptedVote({
+          daoId,
+          proposalId,
+          choice,
+          kit: kit as never,
+          voteMode,
+          eligibleRoot,
+          encryptionPublicKey: {
+            x: BigInt(encryption.publicKey.x),
+            y: BigInt(encryption.publicKey.y),
+          },
+          epoch: encryption.epoch,
+        });
+        setProgress(
+          `Encrypted vote submitted (${result.ciphertext.c1.slice(0, 12)}...)`,
+        );
+        setStep("success");
+        onComplete();
+        return;
+      }
 
       // Step 1: Load registration data (or regenerate from wallet)
       //

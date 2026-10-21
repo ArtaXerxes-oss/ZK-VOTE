@@ -46,6 +46,22 @@ const MAX_METADATA_CID_LEN: u32 = 64; // Max IPFS CID length
 const MIN_UPGRADE_DELAY: u64 = 24 * 60 * 60;
 const MAX_UPGRADE_PAYLOAD_LEN: u32 = 4096;
 
+/// Durable receipt for an idempotent DAO creation.
+///
+/// The backend provisioner can safely retry `create_dao_idempotent` after a
+/// crash: the key is the idempotency token, and the receipt records the DAO it
+/// produced. Later bootstrap steps still need their own idempotency (the
+/// backend saga records checkpoints), but a retried registry step can never
+/// create a duplicate DAO.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct DaoCreationReceipt {
+    pub dao_id: u64,
+    pub idempotency_key: BytesN<32>,
+    pub creator: Address,
+    pub created_at: u64,
+}
+
 #[contracttype]
 #[derive(Clone)]
 pub struct DaoInfo {
@@ -214,6 +230,15 @@ pub struct DaoCreateEvent {
     pub dao_id: u64,
     pub admin: Address,
     pub name: String,
+}
+
+#[soroban_sdk::contractevent]
+#[derive(Clone, Debug, PartialEq)]
+pub struct DaoCreatedIdempotentEvent {
+    #[topic]
+    pub idempotency_key: BytesN<32>,
+    pub dao_id: u64,
+    pub created: bool,
 }
 
 #[soroban_sdk::contractevent]
@@ -705,6 +730,81 @@ impl DaoRegistry {
         .publish(&env);
 
         dao_id
+    }
+
+    /// Idempotent DAO creation used by the bootstrap saga.
+    ///
+    /// Retrying with the same 32-byte key returns the original DAO id with
+    /// `created == false` instead of minting a duplicate DAO. The receipt is
+    /// durable for the life of the contract and lets the backend prove which
+    /// step actually committed after a crash.
+    pub fn create_dao_idempotent(
+        env: Env,
+        idempotency_key: BytesN<32>,
+        name: String,
+        creator: Address,
+        membership_open: bool,
+        members_can_propose: bool,
+        metadata_cid: Option<String>,
+    ) -> (u64, bool) {
+        Self::bump_instance(&env);
+
+        let key = (symbol_short!("idem"), idempotency_key.clone());
+        if let Some(dao_id) = env.storage().persistent().get::<_, u64>(&key) {
+            Self::bump_persistent(&env, &key);
+            DaoCreatedIdempotentEvent {
+                idempotency_key,
+                dao_id,
+                created: false,
+            }
+            .publish(&env);
+            return (dao_id, false);
+        }
+
+        let dao_id = Self::create_dao(
+            env.clone(),
+            name,
+            creator.clone(),
+            membership_open,
+            members_can_propose,
+            metadata_cid,
+        );
+
+        env.storage().persistent().set(&key, &dao_id);
+        Self::bump_persistent(&env, &key);
+
+        let receipt = DaoCreationReceipt {
+            dao_id,
+            idempotency_key: idempotency_key.clone(),
+            creator,
+            created_at: env.ledger().timestamp(),
+        };
+        let receipt_key = (symbol_short!("receipt"), dao_id);
+        env.storage().persistent().set(&receipt_key, &receipt);
+        Self::bump_persistent(&env, &receipt_key);
+
+        DaoCreatedIdempotentEvent {
+            idempotency_key,
+            dao_id,
+            created: true,
+        }
+        .publish(&env);
+
+        (dao_id, true)
+    }
+
+    /// Resolve an idempotency key to the DAO it created, if any.
+    pub fn get_dao_by_idempotency_key(env: Env, idempotency_key: BytesN<32>) -> Option<u64> {
+        Self::bump_instance(&env);
+        let key = (symbol_short!("idem"), idempotency_key);
+        env.storage().persistent().get(&key)
+    }
+
+    /// Read the durable creation receipt for a DAO.
+    pub fn get_creation_receipt(env: Env, dao_id: u64) -> Option<DaoCreationReceipt> {
+        Self::bump_instance(&env);
+        let key = (symbol_short!("receipt"), dao_id);
+        env.storage().persistent().get(&key)
     }
 
     /// Get DAO info
