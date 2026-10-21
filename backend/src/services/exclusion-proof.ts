@@ -78,13 +78,36 @@ export interface RevocationStatus {
   commitment: string;
 }
 
+/**
+ * Maximum index addressable by the 18-level membership tree used by the
+ * current voting circuits (2^18 leaves). Larger deployments require an
+ * explicitly versioned exclusion circuit, verification key and tree depth.
+ * This is an input-safety limit, NOT a measured proving-performance threshold.
+ */
+export const MAX_EXCLUSION_REGISTRY_LEAVES = 1 << 18;
+
 export async function verifyExclusionProof(
   proof: ExclusionProof,
   _treeContractId: string,
 ): Promise<{ valid: boolean; reason?: string }> {
   try {
-    const { commitment, daoId, historicalRoot, currentRoot } =
+    const { commitment, daoId, leafIndex, historicalRoot, currentRoot } =
       proof.publicInputs;
+
+    // Reject unsupported or malformed indices before DB work or proof
+    // dispatch. Never silently wrap, round or truncate a JS number.
+    if (
+      !Number.isSafeInteger(leafIndex) ||
+      leafIndex < 0 ||
+      leafIndex >= MAX_EXCLUSION_REGISTRY_LEAVES
+    ) {
+      return {
+        valid: false,
+        reason:
+          "Exclusion leaf index is outside the supported 18-level registry " +
+          "(0..262143); use a versioned larger-depth circuit and verifier.",
+      };
+    }
 
     deps().log("info", "exclusion_proof_verification_started", {
       commitment: commitment.slice(0, 10),

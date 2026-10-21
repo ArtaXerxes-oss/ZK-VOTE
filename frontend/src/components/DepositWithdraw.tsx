@@ -7,6 +7,10 @@ import {
 } from "../lib/anchorMessaging";
 import { isAllowedMessageOrigin } from "../lib/messageOrigin";
 import { canonicalizeStellarAmount } from "../lib/stellarAmount";
+import {
+  useOnWalletSessionChange,
+  useSessionBoundForm,
+} from "../hooks/useWalletSession";
 
 type Asset = "USDC" | "EURC";
 
@@ -17,6 +21,17 @@ export default function DepositWithdraw() {
   const [info, setInfo] = useState<any>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const anchorSession = useMemo(() => parseTrustedAnchorSession(info), [info]);
+  // An open anchor flow was started for the previous session's context:
+  // close it on a wallet switch rather than let it complete under the new
+  // one, and make the user re-confirm the form (#750).
+  const { blockReason } = useSessionBoundForm([asset, amount, account]);
+  useOnWalletSessionChange(() =>
+    setInfo((current: Record<string, unknown> | null) =>
+      current?.interactiveUrl
+        ? { error: "Your wallet changed, so the deposit window was closed. Start again to continue." }
+        : current,
+    ),
+  );
 
   useEffect(() => {
     if (!anchorSession) return;
@@ -85,6 +100,8 @@ export default function DepositWithdraw() {
 
   const deposit = async () => {
     try {
+      const sessionBlock = blockReason();
+      if (sessionBlock) throw new Error(sessionBlock);
       const canonicalAmount = canonicalizeStellarAmount(amount);
       if (!/^G[A-Z2-7]{55}$/.test(account))
         throw new Error("Enter a valid Stellar G address");
@@ -107,6 +124,8 @@ export default function DepositWithdraw() {
   };
   const withdraw = async () => {
     try {
+      const sessionBlock = blockReason();
+      if (sessionBlock) throw new Error(sessionBlock);
       const canonicalAmount = canonicalizeStellarAmount(amount);
       if (!/^G[A-Z2-7]{55}$/.test(account))
         throw new Error("Enter a valid Stellar G address");
