@@ -249,6 +249,69 @@ Emitted when a DAO successfully upgrades its circuit.
 | `circuit_type` | CircuitType | | Circuit type after upgrade |
 | `to_circuit_id` | String | | New circuit ID |
 
+### `VkProposalApprovedEvent`
+Emitted when an approver votes to approve a pending VK upgrade proposal.
+Previously undocumented — added by SPIKE-053 / issue #733 audit.
+
+| Field | Type | Topic | Description |
+|-------|------|-------|-------------|
+| `proposal_id` | u32 | ✓ | VK upgrade proposal identifier |
+| `approver` | Address | | Address that approved |
+| `current_approvals` | u32 | | Number of approvals so far |
+| `required_approvals` | u32 | | Threshold required to execute |
+
+### `VkProposalExecutedEvent`
+Emitted when a VK upgrade proposal reaches threshold and is executed.
+Previously undocumented — added by SPIKE-053 / issue #733 audit.
+
+| Field | Type | Topic | Description |
+|-------|------|-------|-------------|
+| `proposal_id` | u32 | ✓ | VK upgrade proposal identifier |
+| `circuit_id` | String | | Circuit identifier of the new VK |
+| `circuit_type` | CircuitType | | Circuit type of the new VK |
+
+### `VkProposalCancelledEvent`
+Emitted when a VK upgrade proposal is cancelled by an authorized address.
+Previously undocumented — added by SPIKE-053 / issue #733 audit.
+
+| Field | Type | Topic | Description |
+|-------|------|-------|-------------|
+| `proposal_id` | u32 | ✓ | VK upgrade proposal identifier |
+| `cancelled_by` | Address | | Address that cancelled the proposal |
+
+---
+
+## Event Schema Versioning Policy (SPIKE-053 / issue #733)
+
+Contract events are consumed by the backend indexer (`backend/src/services/indexer.ts`)
+and reflected in TypeScript types (`backend/src/generated/contract-events.ts`).
+Without versioned envelopes, an additive field silently shifts positional parsing
+and can corrupt tallies.
+
+### Rules (v1 — effective from this document revision)
+
+1. **Additive-only**: new fields may be appended to existing event structs; no
+   field may be removed or reordered without bumping the event schema version.
+2. **Version documentation**: when a field is added to an existing event, a
+   `_schema_version` note must be added to its table in this document and the
+   corresponding TypeScript consumer type must be updated in the same PR.
+3. **Indexer tolerance**: the backend indexer MUST use lenient positional
+   parsing (ignore unknown trailing fields) so a new-version event ingests
+   cleanly through an old indexer without crashing.
+4. **Breaking changes** (field removal / reorder): require a dual-version
+   ingestion window — emit both old and new shapes for at least one release
+   cycle before removing the old shape.
+5. **CI gate**: `EVENTS.md` is the source of truth. A CI check (`.github/workflows/`)
+   must fail if a contract emits an event not listed in this document.
+
+### Events added after initial release
+
+| Event | Added in | Fields added |
+|-------|----------|--------------|
+| `VkProposalApprovedEvent` | SPIKE-053 | initial documentation |
+| `VkProposalExecutedEvent` | SPIKE-053 | initial documentation |
+| `VkProposalCancelledEvent` | SPIKE-053 | initial documentation |
+
 ---
 
 ## Indexing Guide
