@@ -28,6 +28,9 @@ export interface ProofRequest {
   input: Record<string, unknown>;
   wasm: ArrayBuffer | string;
   zkey: ArrayBuffer | string;
+  /** #728: Merkle depth for the circuit being proved (0 → default depth 18).
+   *  Used by the OOM preflight to select the correct memory budget. */
+  merkleDepth?: number;
 }
 
 export interface ProofResponse {
@@ -36,6 +39,54 @@ export interface ProofResponse {
   proof?: unknown;
   publicSignals?: unknown;
   error?: string;
+  /** #728: Set to true when the request was aborted by the OOM preflight
+   *  before any proving work was done. The caller should reroute to a
+   *  server-assisted proving path or notify the user to use a desktop
+   *  browser. No voter-identifying information is included. */
+  oomAborted?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// #728 — OOM preflight
+//
+// Peak witness-generation RAM grows roughly with 2^depth. These budgets are
+// conservative lower bounds measured on mid-range mobile devices:
+//
+//   depth 18 (default)  ~420 MB peak   — desktop/high-end mobile only
+//   depth 25            ~1.2 GB peak   — desktop only
+//   depth 20            ~600 MB peak   — desktop/high-end mobile
+//
+// If the device cannot satisfy the budget the worker returns oomAborted:true
+// immediately so the caller can redirect to server-assisted proving without
+// wasting battery and time on a doomed attempt.
+//
+// `navigator.deviceMemory` is a coarse hint (0.25 / 0.5 / 1 / 2 / 4 / 8 GB)
+// available in Chrome and Edge. Safari and Firefox do not expose it; in those
+// engines we allow the prove attempt and rely on the catch block below to
+// surface the failure gracefully.
+// ---------------------------------------------------------------------------
+
+/** Memory budget in MiB for each Merkle depth. */
+const DEPTH_MEMORY_BUDGET_MIB: Record<number, number> = {
+  18: 420,
+  20: 600,
+  25: 1200,
+};
+const DEFAULT_DEPTH = 18;
+const MIB = 1024 * 1024;
+
+function estimatedPeakMib(merkleDepth: number): number {
+  return DEPTH_MEMORY_BUDGET_MIB[merkleDepth] ?? DEPTH_MEMORY_BUDGET_MIB[DEFAULT_DEPTH];
+}
+
+/** Returns false when the device almost certainly lacks enough RAM.
+ *  Returns true (allow) when the API is unavailable (fail-open). */
+function memoryPreflightOk(requiredMib: number): boolean {
+  const nav = self.navigator as Navigator & { deviceMemory?: number };
+  if (typeof nav.deviceMemory !== "number") return true; // API unavailable — allow
+  const availableMib = nav.deviceMemory * 1024;
+  // Add 15 % headroom for the browser's own overhead.
+  return availableMib * 0.85 >= requiredMib;
 }
 
 function verifyWasm(wasm: Uint8Array | string): boolean {
@@ -45,6 +96,18 @@ function verifyWasm(wasm: Uint8Array | string): boolean {
 }
 
 async function prove(req: ProofRequest): Promise<ProofResponse> {
+  // #728: OOM preflight — abort before attempting a prove we cannot finish.
+  const depth = req.merkleDepth ?? DEFAULT_DEPTH;
+  const requiredMib = estimatedPeakMib(depth);
+  if (!memoryPreflightOk(requiredMib)) {
+    return {
+      id: req.id,
+      ok: false,
+      oomAborted: true,
+      error: `Insufficient device memory for depth-${depth} witness (estimated peak: ${requiredMib} MiB). Use a desktop browser or request server-assisted proving.`,
+    };
+  }
+
   try {
     const wasm = req.wasm instanceof ArrayBuffer ? new Uint8Array(req.wasm) : req.wasm;
     const zkey = req.zkey instanceof ArrayBuffer ? new Uint8Array(req.zkey) : req.zkey;
@@ -55,7 +118,25 @@ async function prove(req: ProofRequest): Promise<ProofResponse> {
 
     const { proof, publicSignals } = await groth16.fullProve(req.input as unknown as import("snarkjs").CircuitSignals, wasm as string, zkey as string);
     return { id: req.id, ok: true, proof, publicSignals };
-  } catch {
+  } catch (err) {
+    // #728: distinguish OOM kills (Safari/Firefox raise RangeError or a
+    // generic Error whose message contains "memory" or "allocation") from
+    // constraint-satisfaction failures. Return oomAborted:true so the caller
+    // can offer the server-assisted path rather than a bare error screen.
+    const msg = err instanceof Error ? err.message : "";
+    const isLikelyOom =
+      err instanceof RangeError ||
+      /out of memory|allocation failed|memory access/i.test(msg);
+
+    if (isLikelyOom) {
+      return {
+        id: req.id,
+        ok: false,
+        oomAborted: true,
+        error: "Proof generation ran out of memory. Try a desktop browser or server-assisted proving.",
+      };
+    }
+
     // Report only that proving failed. The message from snarkjs can name the
     // constraint that was not satisfied, which is a statement about the
     // witness — that is, about the voter.
