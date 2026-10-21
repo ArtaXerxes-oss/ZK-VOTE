@@ -651,6 +651,13 @@ export const batch_partial_failure_total = new Counter({
   registers: [register],
 });
 
+export const priorityStarvationTotal = new Counter({
+  name: "zkvote_priority_starvation_total",
+  help: "Total priority-queued requests that waited beyond the starvation threshold",
+  labelNames: ["priority", "route"] as const,
+  registers: [register],
+});
+
 // ============================================
 // COST-BASED RATE LIMITING METRICS (#525)
 // ============================================
@@ -659,6 +666,20 @@ export const paymentOpsPerMinute = new Histogram({
   name: "zkvote_payment_ops_per_minute",
   help: "Histogram of payment operations per minute per IP",
   buckets: [1, 5, 10, 25, 50, 100],
+  registers: [register],
+});
+
+export const swapContractRejectedTotal = new Counter({
+  name: "zkvote_swap_contract_rejected_total",
+  help: "Soroswap quote responses rejected because the returned contract id was absent or did not match the pinned router",
+  labelNames: ["reason"] as const,
+  registers: [register],
+});
+
+export const trustlinePreflightFailureTotal = new Counter({
+  name: "zkvote_trustline_preflight_failure_total",
+  help: "Payment or swap operations rejected before submission because a required Stellar trustline was missing or unauthorized",
+  labelNames: ["asset", "role", "reason"] as const,
   registers: [register],
 });
 
@@ -731,3 +752,20 @@ export const daoReconciliationLastOk = new Gauge({
   registers: [register],
 });
 
+// ============================================
+// OFFLINE RETRY & CDC OUTBOX LAG METRICS (#542, #544)
+// ============================================
+
+export const offlineRetryTotal = new Counter({
+  name: "zkvote_offline_retry_total",
+  help: "Total offline retry attempts processed from client queue",
+  labelNames: ["type", "status"] as const,
+  registers: [register],
+});
+
+export const outboxLagGauge = new Gauge({
+  name: "zkvote_outbox_lag_seconds",
+  help: "Outbox pattern CDC WAL replication lag in seconds",
+  labelNames: ["channel"] as const,
+  registers: [register],
+});
