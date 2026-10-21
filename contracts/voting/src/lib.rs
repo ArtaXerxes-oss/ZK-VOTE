@@ -1014,6 +1014,19 @@ pub struct ProposalInfo {
     pub vote_mode: VoteMode, // Fixed or Trailing voting
     pub earliest_root_index: u32, // For Trailing mode: earliest valid root index
     pub snapshot_ledger: u32, // Ledger sequence at creation for balance snapshot
+    /// #736 — Membership Merkle root pinned at proposal creation time.
+    ///
+    /// This is the eligibility snapshot: only commitments that existed in the
+    /// tree at or before this root are considered eligible voters for this
+    /// proposal, regardless of when the proof is submitted. The ZK circuit
+    /// must include this root as a public signal so the contract can verify
+    /// the prover used the correct snapshot and not a later, attacker-inflated
+    /// root (flash-membership attack).
+    ///
+    /// Proofs submitted against a different membership root are rejected even
+    /// if that root is otherwise valid for the DAO — it is not the root that
+    /// was in effect when this proposal was created.
+    pub eligibility_snapshot_root: U256,
 }
 
 // Typed Events
@@ -2588,6 +2601,13 @@ impl Voting {
 
         let proposal_id = Self::next_proposal_id(&env, dao_id);
 
+        // #736: pin the eligibility snapshot root — this is the membership
+        // Merkle root at proposal-creation time. Votes submitted later must
+        // prove membership against THIS root, not whatever root is current at
+        // vote time. That prevents flash-membership attacks (mint → register →
+        // vote → burn within a single election window).
+        let eligibility_snapshot_root = eligible_root.clone();
+
         let proposal = ProposalInfo {
             id: proposal_id,
             dao_id,
@@ -2605,6 +2625,7 @@ impl Voting {
             vote_mode,
             earliest_root_index,
             snapshot_ledger,
+            eligibility_snapshot_root,
         };
 
         let key = DataKey::Proposal(dao_id, proposal_id);
@@ -3743,6 +3764,16 @@ impl Voting {
             panic_with_error!(&env, VotingError::RootMismatch);
         }
 
+        // #736: flash-membership guard — the proof must be bound to the
+        // eligibility snapshot root pinned at proposal-creation time. A voter
+        // who registered after the snapshot cannot manufacture a valid proof
+        // for this root, and a flash-membership attacker who registered,
+        // voted, and then burned/transferred the SBT is identifiable because
+        // their commitment was not in the tree when this snapshot was taken.
+        if root != proposal.eligibility_snapshot_root {
+            panic_with_error!(&env, VotingError::RootMismatch);
+        }
+
         let vote_choice_index: u32 = if vote_choice { 1 } else { 0 };
         let election_config: ElectionConfig = env
             .storage()
@@ -4717,6 +4748,12 @@ impl Voting {
         }
         if proposal.state != ProposalState::Closed {
             proposal.state = ProposalState::Closed;
+            // Freeze Trailing-mode results: record the ledger timestamp at which
+            // the tally became final.  All result consumers (rewards, randomness,
+            // upgrades) must treat the tally as immutable once this is set.
+            if proposal.vote_mode == VoteMode::Trailing {
+                proposal.trailing_finalized_at = Some(env.ledger().timestamp());
+            }
             env.storage().persistent().set(&key, &proposal);
             Self::bump_persistent(&env, &key);
             ProposalClosedEvent {

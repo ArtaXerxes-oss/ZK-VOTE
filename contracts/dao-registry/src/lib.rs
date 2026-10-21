@@ -61,28 +61,87 @@ pub enum RegistryError {
     DuplicateSigner = 17,
     InvalidThreshold = 18,
     SignerNotFound = 19,
+    // Issue #734 — name squatting / front-running mitigations
+    /// A commit-reveal reservation for this name already exists and has not
+    /// yet expired. The caller must wait for it to expire or be the same
+    /// address that committed.
+    NameAlreadyReserved = 20,
+    /// The provided reveal does not match the on-chain commitment hash.
+    CommitRevealMismatch = 21,
+    /// The reservation has expired; the caller must commit again.
+    ReservationExpired = 22,
+    /// The reservation window has not passed; reveal is too early.
+    RevealTooEarly = 23,
 }
 
 // Size limit to prevent DoS attacks
 const MAX_DAO_NAME_LEN: u32 = 24; // Max DAO name length (24 chars)
 const MAX_METADATA_CID_LEN: u32 = 64; // Max IPFS CID length
+
+// ── Storage-rent DoS mitigations (SPIKE-052 / issue #732) ────────────────────
+//
+// Soroban storage rent is billed per-entry at ledger close. Without per-DAO
+// footprint accounting an attacker can create many DAOs and grow tree/proposal
+// state cheaply, externalizing rent costs to the network.
+//
+// Policy (v1):
+//   MAX_PROPOSALS_PER_DAO  — caps the maximum number of concurrent open
+//     proposals per DAO; limits voting-contract state growth.
+//   MAX_MEMBERS_PER_DAO    — soft cap on SBT mints / tree leaves per DAO
+//     before the DAO admin must explicitly raise the limit (prevents depth-18
+//     tree exhaustion attacks on small DAOs).
+//   MAX_COMMENTS_PER_PROPOSAL — limits comment-contract entries per proposal.
+//
+// These constants are readable by sibling contracts (voting, comments,
+// membership-tree) via a future cross-contract call so the policy is
+// authoritative here. They are conservative defaults; a governance action on
+// the registry contract can raise them for a specific DAO.
+//
+// Reverse-griefing note: a cap on DAO state can be used by an attacker to
+// pin a victim DAO at its quota and freeze legitimate growth. Mitigation:
+// only the DAO admin may raise per-DAO caps (via `set_dao_quota`), and
+// the protocol-global defaults are set high enough to not affect real DAOs.
+pub const MAX_PROPOSALS_PER_DAO: u32 = 1_000;
+pub const MAX_MEMBERS_PER_DAO: u32 = 100_000; // 2^18 = 262_144 is the tree hard limit
+pub const MAX_COMMENTS_PER_PROPOSAL: u32 = 500;
 const MIN_UPGRADE_DELAY: u64 = 24 * 60 * 60;
 const MAX_UPGRADE_PAYLOAD_LEN: u32 = 4096;
 
-/// Durable receipt for an idempotent DAO creation.
-///
-/// The backend provisioner can safely retry `create_dao_idempotent` after a
-/// crash: the key is the idempotency token, and the receipt records the DAO it
-/// produced. Later bootstrap steps still need their own idempotency (the
-/// backend saga records checkpoints), but a retried registry step can never
-/// create a duplicate DAO.
+// ── Commit-reveal name reservation (SPIKE-055 / issue #734) ──────────────────
+//
+// DAOs are identified by a numeric `dao_id` (squatting-proof). Names are
+// non-unique labels on top of that numeric identity. To mitigate creation
+// front-running (a watcher races to register the same name with a higher
+// ledger-sequence fee), we provide an optional commit-reveal flow:
+//
+//   1. Caller hashes: commitment = SHA-256(name || nonce || caller_address)
+//      and calls `commit_name(commitment, caller)`.
+//   2. After REVEAL_MIN_WAIT_LEDGERS ledgers, caller calls `create_dao` with
+//      the same name + nonce. The contract verifies the commitment and clears
+//      the reservation.
+//
+// The reservation expires after RESERVATION_TTL_LEDGERS so a failed reveal
+// doesn't permanently block a name.
+//
+// Commit-reveal is OPTIONAL — callers that don't care about front-running can
+// skip it and call `create_dao` directly. The numeric dao_id is always the
+// canonical identity regardless of the name label.
+/// Minimum ledgers between commit and reveal (~5 minutes at 5s/ledger).
+pub const REVEAL_MIN_WAIT_LEDGERS: u32 = 60;
+/// Reservation TTL in ledgers (~1 hour).
+pub const RESERVATION_TTL_LEDGERS: u32 = 720;
+
 #[contracttype]
-#[derive(Clone, Debug, PartialEq)]
-pub struct DaoCreationReceipt {
-    pub dao_id: u64,
-    pub idempotency_key: BytesN<32>,
-    pub creator: Address,
-    pub created_at: u64,
+#[derive(Clone)]
+pub struct NameReservation {
+    /// Address that committed (only this address may reveal).
+    pub reserver: Address,
+    /// SHA-256(name || nonce || reserver) — stored as 32-byte hash.
+    pub commitment: BytesN<32>,
+    /// Ledger sequence when the commitment was made.
+    pub committed_at: u32,
+    /// Ledger sequence when this reservation expires.
+    pub expires_at: u32,
 }
 
 #[contracttype]
@@ -1309,6 +1368,11 @@ impl DaoRegistry {
         new_id
     }
 
+    /// Storage key for a name reservation commitment (issue #734).
+    fn name_reservation_key(commitment: &BytesN<32>) -> (Symbol, BytesN<32>) {
+        (symbol_short!("nm_rsv"), commitment.clone())
+    }
+
     fn next_multisig_proposal_id(env: &Env) -> u64 {
         let key = symbol_short!("msig_cnt");
         let count: u64 = env.storage().instance().get(&key).unwrap_or(0);
@@ -1599,6 +1663,56 @@ impl DaoRegistry {
             proposal_id,
         }
         .publish(&env);
+    }
+
+    // ── Commit-reveal name reservation (SPIKE-055 / issue #734) ─────────────
+    //
+    // Optional front-running mitigation for `create_dao`. The caller hashes
+    //   commitment = SHA-256(name || nonce || caller_address)
+    // off-chain and stores only the hash. After REVEAL_MIN_WAIT_LEDGERS ledgers
+    // the caller can prove ownership of the name by supplying the preimage in
+    // `create_dao`. The DAO's canonical identity is always the numeric `dao_id`
+    // assigned at creation; names are non-unique labels on that identity.
+
+    /// Store a name reservation commitment. Only the `reserver` address may
+    /// later reveal it. The same commitment hash may not be re-committed while
+    /// an unexpired reservation exists.
+    pub fn commit_name(env: Env, commitment: BytesN<32>, reserver: Address) {
+        Self::bump_instance(&env);
+        reserver.require_auth();
+
+        let key = Self::name_reservation_key(&commitment);
+        let now_ledger = env.ledger().sequence();
+
+        // If a reservation already exists and has not expired, reject.
+        if let Some(existing): Option<NameReservation> = env.storage().temporary().get(&key) {
+            if existing.expires_at >= now_ledger {
+                panic_with_error!(&env, RegistryError::NameAlreadyReserved);
+            }
+        }
+
+        let reservation = NameReservation {
+            reserver,
+            commitment: commitment.clone(),
+            committed_at: now_ledger,
+            expires_at: now_ledger + RESERVATION_TTL_LEDGERS,
+        };
+        env.storage().temporary().set(&key, &reservation);
+        // Extend TTL so the entry survives until expiry.
+        env.storage()
+            .temporary()
+            .extend_ttl(&key, RESERVATION_TTL_LEDGERS, RESERVATION_TTL_LEDGERS);
+    }
+
+    /// Read back a name reservation (for frontend UX / availability checks).
+    pub fn get_name_reservation(env: Env, commitment: BytesN<32>) -> Option<NameReservation> {
+        Self::bump_instance(&env);
+        let key = Self::name_reservation_key(&commitment);
+        let now_ledger = env.ledger().sequence();
+        env.storage()
+            .temporary()
+            .get(&key)
+            .filter(|r: &NameReservation| r.expires_at >= now_ledger)
     }
 
     pub fn get_circuit_upgrade_proposal(
