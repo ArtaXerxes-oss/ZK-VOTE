@@ -143,7 +143,59 @@ By signing, you accept the voting terms for DAO ${daoId}.`;
   };
 }
 
-// Legacy: Generate random ZK credentials (kept for backwards compatibility)
+/**
+ * Derives cryptographically domain-separated ZK credentials for a specific DAO
+ * from a master secret. This prevents cross-DAO secret reuse and correlation of
+ * identity commitments and nullifiers across different DAOs.
+ *
+ * @param masterSecret Base secret string or seed
+ * @param daoId DAO identifier used for domain separation
+ */
+export async function derivePerDaoCredentials(
+  masterSecret: string,
+  daoId: number,
+): Promise<ZKCredentials> {
+  const poseidon = await buildPoseidon();
+  const baseBytes = new TextEncoder().encode(masterSecret);
+
+  // Secret: bound to DAO domain
+  const secretDomain = new TextEncoder().encode(`zkvote:secret:${daoId}`);
+  const secretInput = new Uint8Array([...secretDomain, ...baseBytes]);
+  const secretHash = new Uint8Array(await crypto.subtle.digest("SHA-256", secretInput));
+  const secret = BigInt("0x" + Array.from(secretHash).map((b) => b.toString(16).padStart(2, "0")).join(""));
+
+  // Salt: bound to DAO domain
+  const saltDomain = new TextEncoder().encode(`zkvote:salt:${daoId}`);
+  const saltInput = new Uint8Array([...saltDomain, ...baseBytes]);
+  const saltHash = new Uint8Array(await crypto.subtle.digest("SHA-256", saltInput));
+  const salt = BigInt("0x" + Array.from(saltHash).map((b) => b.toString(16).padStart(2, "0")).join(""));
+
+  // Blinding: bound to DAO domain
+  const blindingDomain = new TextEncoder().encode(`zkvote:blinding:${daoId}`);
+  const blindingInput = new Uint8Array([...blindingDomain, ...baseBytes]);
+  const blindingHash = new Uint8Array(await crypto.subtle.digest("SHA-256", blindingInput));
+  const blindingFactor = BigInt("0x" + Array.from(blindingHash).map((b) => b.toString(16).padStart(2, "0")).join(""));
+
+  const commitment = poseidon.F.toString(
+    poseidon([DOMAIN_TAG, secret, salt, blindingFactor]),
+  );
+
+  return {
+    secret: secret.toString(),
+    salt: salt.toString(),
+    blindingFactor: blindingFactor.toString(),
+    commitment,
+  };
+}
+
+/**
+ * Legacy: Generate random ZK credentials (kept for backwards compatibility)
+ *
+ * @deprecated Generating standalone random credentials without DAO binding can lead to
+ * cross-DAO secret reuse where the same (secret, salt) produces identical commitments and
+ * linkable nullifiers across DAOs. Prefer `generateZKCredentials(kit, daoId)` or
+ * `derivePerDaoCredentials(masterSecret, daoId)`.
+ */
 export async function generateRandomZKCredentials(): Promise<ZKCredentials> {
   const poseidon = await buildPoseidon();
 

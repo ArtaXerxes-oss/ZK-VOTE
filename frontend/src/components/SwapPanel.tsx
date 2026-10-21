@@ -7,6 +7,10 @@ import {
   horizonStroopsToSorobanAmount,
   parseStroops,
 } from "../lib/stellarAmount";
+import {
+  useOnWalletSessionChange,
+  useSessionBoundForm,
+} from "../hooks/useWalletSession";
 
 type Asset = "XLM" | "USDC" | "EURC";
 
@@ -16,6 +20,10 @@ export default function SwapPanel() {
   const [amount, setAmount] = useState("10");
   const [quote, setQuote] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  // A quote belongs to the session it was taken in: drop it when the wallet
+  // switches account or network, and block a swap until re-quoted (#750).
+  const { blockReason } = useSessionBoundForm([from, to, amount, quote]);
+  useOnWalletSessionChange(() => setQuote(null));
 
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
@@ -102,6 +110,12 @@ export default function SwapPanel() {
   };
 
   const doSwap = async () => {
+    const sessionBlock = blockReason();
+    if (sessionBlock) {
+      setQuote(null);
+      alert(`${sessionBlock} Get a new quote first.`);
+      return;
+    }
     setLoading(true);
     try {
       if (from === to) throw new Error("Choose two different assets");
@@ -133,6 +147,7 @@ export default function SwapPanel() {
       <h3 className="text-lg font-semibold">Swap XLM / USDC / EURC (real)</h3>
       <div className="grid grid-cols-3 gap-3">
         <select
+          aria-label="Swap from"
           value={from}
           onChange={(e) => setFrom(e.target.value as Asset)}
           className="border rounded px-3 py-2 bg-background"
@@ -141,8 +156,9 @@ export default function SwapPanel() {
           <option>USDC</option>
           <option>EURC</option>
         </select>
-        <span className="text-center py-2">→</span>
+        <span className="text-center py-2" aria-hidden="true">→</span>
         <select
+          aria-label="Swap to"
           value={to}
           onChange={(e) => setTo(e.target.value as Asset)}
           className="border rounded px-3 py-2 bg-background"
@@ -153,6 +169,8 @@ export default function SwapPanel() {
         </select>
       </div>
       <input
+        aria-label="Amount"
+        inputMode="decimal"
         value={amount}
         onChange={(e) => setAmount(e.target.value)}
         placeholder="Amount"

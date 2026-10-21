@@ -152,6 +152,47 @@ export function getDegradedServices(): string[] {
   return [...lastDegradedServices];
 }
 
+/**
+ * User-facing impact of degraded upstream sources (#745). The relayer reports
+ * external dependencies by name in X-Service-Degraded; money-path ones need a
+ * specific message rather than the generic "reduced functionality" line.
+ */
+export interface DegradedSourceImpact {
+  service: string;
+  /** Whether the dependency sits on a vote or money path. */
+  critical: boolean;
+  message: string;
+}
+
+const DEGRADED_SOURCE_IMPACT: Record<string, Omit<DegradedSourceImpact, "service">> = {
+  soroban_rpc: {
+    critical: true,
+    message: "Voting may be slower or briefly unavailable while the network connection recovers.",
+  },
+  horizon: {
+    critical: true,
+    message: "Payments and swaps may be delayed or temporarily unavailable.",
+  },
+  swap_quotes: {
+    critical: false,
+    message: "Swap prices come from a backup source and may differ at execution.",
+  },
+  anchor_usdc: {
+    critical: false,
+    message: "USDC deposits and withdrawals may be delayed.",
+  },
+  anchor_eurc: {
+    critical: false,
+    message: "EURC deposits and withdrawals may be delayed.",
+  },
+};
+
+export function describeDegradedSources(services: string[]): DegradedSourceImpact[] {
+  return services
+    .filter((service) => service in DEGRADED_SOURCE_IMPACT)
+    .map((service) => ({ service, ...DEGRADED_SOURCE_IMPACT[service] }));
+}
+
 function notifyDegradation(services: string[]) {
   const key = services.slice().sort().join(",");
   const prev = lastDegradedServices.slice().sort().join(",");

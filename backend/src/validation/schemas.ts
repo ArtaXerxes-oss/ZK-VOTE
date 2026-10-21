@@ -7,10 +7,16 @@
  */
 
 import { z } from "zod";
+import { extendZodWithOpenApi } from "@asteasolutions/zod-to-openapi";
 import { createHash } from "node:crypto";
 import sharp from "sharp";
 import { ALLOWED_IMAGE_MIMES, BN254_MODULUS } from "../config.js";
 import { BN254_FQ_MODULUS } from "../types/index.js";
+
+// The payment schemas below call .openapi() at module load. openapi.ts also
+// extends zod, but ESM evaluates this module first whenever something imports
+// it directly (routes, tests), so extend here too. Idempotent (#750).
+extendZodWithOpenApi(z);
 
 async function fileTypeFromBuffer(
   buffer: Buffer,
@@ -381,16 +387,16 @@ export const positiveInteger = z
   );
 
 /**
- * IPFS CID validator (CIDv0 or CIDv1)
- */
-/**
- * IPFS CID validator (CIDv0 or CIDv1)
+ * IPFS CID validator (CIDv0 or CIDv1 or plain text <= 64 chars matching contract allowance)
  */
 export const ipfsCid = z.string().refine(
   (val) => {
-    if (!val || typeof val !== "string") return false;
+    if (typeof val !== "string") return false;
     const trimmed = val.trim();
+    if (!trimmed) return true; // Contract allows empty content_cid
     if (/[/?#\s\0\r\n\t]/.test(trimmed)) return false;
+    // Contract limit is MAX_CID_LEN = 64
+    if (trimmed.length > 64) return false;
     // CIDv0: Qm + 44 base58 chars (exact length)
     if (/^Qm[1-9A-HJ-NP-Za-km-z]{44}$/.test(trimmed)) return true;
     // CIDv1: bafy/bafk + base32 content (59+ chars)
@@ -401,15 +407,61 @@ export const ipfsCid = z.string().refine(
       const content = trimmed.slice(4);
       return /^[a-z2-7]+$/.test(content);
     }
-    // CIDv0: exact-length Bitcoin base58 encoding.
-    if (/^Qm[1-9A-HJ-NP-Za-km-z]{44}$/.test(val)) return true;
-    // CIDv1: bafy... or bafk... (59+ chars).
-    if ((val.startsWith("bafy") || val.startsWith("bafk")) && val.length >= 59)
-      return true;
-    return false;
+    // Allow valid contract-compatible identifiers up to 64 chars
+    return /^[a-zA-Z0-9._-]+$/.test(trimmed);
   },
-  { message: "Invalid IPFS CID format" },
+  { message: "Invalid IPFS CID format (must be valid CID or contract-legal string <= 64 chars)" },
 );
+
+/**
+ * DAO name schema matching on-chain MAX_DAO_NAME_LEN = 24 bytes and Unicode NFC normalization.
+ * Rejects zero-width characters, control characters, and inputs exceeding 24 UTF-8 bytes.
+ */
+export const daoNameSchema = z
+  .string()
+  .transform((val) => val.normalize("NFC"))
+  .refine(
+    (val) => {
+      if (!val || val.trim().length === 0) return false;
+      // Disallow zero-width characters, control characters, invisible joiners
+      if (/[\u200B-\u200D\uFEFF\u0000-\u001F\u007F-\u009F]/.test(val)) return false;
+      // On-chain Soroban contract checks name.len() <= 24 (byte count)
+      const byteLen = Buffer.byteLength(val, "utf8");
+      return byteLen >= 1 && byteLen <= 24 && val.length <= 24;
+    },
+    { message: "DAO name must be 1-24 characters (max 24 UTF-8 bytes) without control or zero-width characters" },
+  );
+
+/**
+ * Proposal title schema matching on-chain MAX_TITLE_LEN = 100 bytes and Unicode NFC normalization.
+ * Rejects zero-width characters, control characters, and inputs exceeding 100 UTF-8 bytes.
+ */
+export const proposalTitleSchema = z
+  .string()
+  .transform((val) => val.normalize("NFC"))
+  .refine(
+    (val) => {
+      if (!val || val.trim().length === 0) return false;
+      if (/[\u200B-\u200D\uFEFF\u0000-\u001F\u007F-\u009F]/.test(val)) return false;
+      // On-chain Soroban contract checks title.len() <= 100 (byte count)
+      const byteLen = Buffer.byteLength(val, "utf8");
+      return byteLen >= 1 && byteLen <= 100;
+    },
+    { message: "Proposal title must be 1-100 UTF-8 bytes without control or zero-width characters" },
+  );
+
+/**
+ * Proposal end_time schema matching on-chain voting/src/lib.rs:2320-2325:
+ * Must be a future Unix timestamp (in seconds).
+ */
+export const proposalEndTimeSchema = z.coerce
+  .number()
+  .int("end_time must be an integer timestamp")
+  .positive("end_time must be positive")
+  .refine(
+    (val) => val > Math.floor(Date.now() / 1000),
+    { message: "Proposal end_time must be in the future" },
+  );
 
 /**
  * Hex string validator for nullifiers (64 hex chars max)
@@ -688,17 +740,18 @@ export const anonymousCommentSchema = z.object(
       .nonnegative("proposalId must be a non-negative integer"),
     contentCid: z.string().refine(
       (val) => {
-        if (/^Qm[1-9A-HJ-NP-Za-km-z]{44}$/.test(val)) return true;
-        if (
-          (val.startsWith("bafy") || val.startsWith("bafk")) &&
-          val.length >= 59
-        )
-          return true;
-        return false;
         if (!val || typeof val !== "string") return false;
         const trimmed = val.trim();
         if (/[/?\\#\s\0\r\n\t]/.test(trimmed)) return false;
-        return CIDV0_REGEX.test(trimmed) || CIDV1_REGEX.test(trimmed);
+        if (/^Qm[1-9A-HJ-NP-Za-km-z]{44}$/.test(trimmed)) return true;
+        if (
+          (trimmed.startsWith("bafy") || trimmed.startsWith("bafk")) &&
+          trimmed.length >= 59 &&
+          trimmed.length <= 64
+        )
+          return true;
+        // Plaintext or backwards compatibility up to contract MAX_CID_LEN
+        return trimmed.length > 0 && trimmed.length <= 64;
       },
       { message: "Invalid submission" },
     ),
@@ -1286,6 +1339,35 @@ export const adminRelayerRotateSchema = z.object({
   targetKeyId: z.string().optional(),
   targetPublicKey: z.string().optional(),
   reason: z.string().max(500).optional(),
+  actor: z.string().min(1).max(100).optional(),
+});
+
+// Relayer key lifecycle (#746)
+const operatorId = z.string().min(1).max(100);
+// `${cosignerId}.${expiresAtMs}.${hmacHex}` — see issueActionApproval.
+const cosignerApproval = z.string().regex(/^[\w-]{1,64}\.\d{10,16}\.[0-9a-f]{64}$/);
+
+export const adminRelayerRotationActionSchema = z.object({
+  actor: operatorId.optional(),
+  reason: z.string().max(500).optional(),
+});
+
+export const adminRelayerCompromiseSchema = z.object({
+  key: z.string().min(1).max(100),
+  declaredBy: operatorId,
+  reason: z.string().min(1).max(500),
+  confirmation: cosignerApproval.optional(),
+});
+
+export const adminRelayerSweepSchema = z.object({
+  key: z.string().min(1).max(100),
+  requestedBy: operatorId,
+  confirmation: cosignerApproval,
+});
+
+export const adminRelayerHaltSchema = z.object({
+  reason: z.string().min(1).max(500),
+  actor: operatorId.optional(),
 });
 
 export const adminRelayerRegisterKeySchema = z.object({
@@ -1323,3 +1405,81 @@ export const remediationHistoryQuerySchema = z.object({
     .max(1000, "limit must be at most 1000")
     .default(50),
 });
+
+// ============================================
+// PAYMENTS / SWAP SCHEMAS (#594 #597)
+// Single source of truth for pay + swap routes AND openapi.ts ENDPOINTS.
+// Addresses are Stellar StrKey-encoded: G... (ed25519 public key) or M...
+// (muxed account, G... base + 64-bit ID). M... and G... are NOT
+// interchangeable — sending a muxed-bound payment to the bare G... base
+// credits the shared base balance instead of the virtual sub-account.
+// ============================================
+
+const STELLAR_G_RE = /^G[A-Z2-7]{55}$/;
+const STELLAR_M_RE = /^M[A-Z2-7]{68}$/;
+
+export const stellarGAddressSchema = z
+  .string()
+  .regex(STELLAR_G_RE, "must be a valid Stellar G... address")
+  .openapi({ example: "GABCDEF234567...", description: "Stellar ed25519 public key (G...)" });
+
+export const stellarMuxedAddressSchema = z
+  .string()
+  .regex(STELLAR_M_RE, "must be a valid Stellar M... muxed address")
+  .openapi({ example: "MAAAAAAAAA...", description: "Stellar muxed account (M...)" });
+
+export const stellarDestinationSchema = z
+  .string()
+  .refine((v) => STELLAR_G_RE.test(v) || STELLAR_M_RE.test(v), {
+    message: "destination must be a valid Stellar G... or M... address",
+  })
+  .openapi({
+    example: "GABCDEF234567...",
+    description:
+      "Payment destination. G... = base account, M... = muxed sub-account. They are not interchangeable.",
+  });
+
+export const paymentAssetSchema = z
+  .enum(["XLM", "USDC", "EURC"])
+  .openapi({ example: "XLM", description: "Payment asset code" });
+
+export const paymentAmountSchema = z
+  .string()
+  .regex(/^\d+(\.\d{1,7})?$/, "amount must be a decimal string with up to 7 decimals")
+  .refine((v) => Number(v) > 0, { message: "amount must be > 0" })
+  .openapi({ example: "10.0000000", description: "Amount as decimal string, max 7 decimals" });
+
+export const paymentOpSchema = z
+  .object({
+    destination: stellarDestinationSchema,
+    asset: paymentAssetSchema,
+    amount: paymentAmountSchema,
+    memo: z.string().max(28).optional().openapi({ example: "invoice-42" }),
+  })
+  .openapi("PaymentOp");
+
+export const payRequestSchema = paymentOpSchema.openapi("PayRequest");
+
+export const payBatchRequestSchema = z
+  .object({
+    ops: z.array(paymentOpSchema).min(1).max(100).openapi({ description: "Batch operations (max 100/tx)" }),
+  })
+  .openapi("PayBatchRequest");
+
+export const swapQuoteQuerySchema = z.object({
+  from: paymentAssetSchema,
+  to: paymentAssetSchema,
+  amount: paymentAmountSchema,
+});
+
+export const swapSubmitRequestSchema = z
+  .object({
+    from: paymentAssetSchema,
+    to: paymentAssetSchema,
+    amount: paymentAmountSchema,
+    destMin: paymentAmountSchema.optional().openapi({ example: "9.5000000" }),
+    destination: stellarDestinationSchema.optional().openapi({
+      description: "Defaults to the relayer account when omitted",
+    }),
+  })
+  .openapi("SwapSubmitRequest");

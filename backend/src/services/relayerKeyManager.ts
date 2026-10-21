@@ -18,7 +18,17 @@ import {
   relayerKeyRotationsTotal,
   relayerKeyAgeSeconds,
   relayerKeyTransactionsTotal,
+  relayerSigningRefusedTotal,
+  relayerSigningTierTotal,
+  setActiveKeyAgeSource,
+  relayerFundedStandbyKeys,
+  relayerDrainingKeys,
 } from "./metrics.js";
+import {
+  SigningPolicy,
+  SigningRefusedError,
+  type SignAuthorization,
+} from "./relayer-signing-policy.js";
 
 const logger = createLogger("relayer-key-manager");
 
@@ -33,7 +43,15 @@ export type KeyStatus =
   | "low_balance"
   | "exhausted"
   | "deprecated"
-  | "revoked";
+  // Previous identity inside the dual-identity window: may still sign
+  // transactions sourced from its own account until drainUntil (#746).
+  | "draining"
+  | "revoked"
+  // Declared compromised: never signs again except a compromise sweep.
+  | "compromised";
+
+/** Statuses that may never become active or sign normal transactions. */
+const REVOKED_STATUSES: ReadonlySet<KeyStatus> = new Set(["revoked", "compromised"]);
 
 export type SignerType = "local" | "aws_kms" | "gcp_kms" | "pkcs11" | "test";
 
@@ -162,6 +180,9 @@ export interface RelayerManagedKey {
   activatedAt: string | null;
   lastUsedAt: string | null;
   lastRotatedAt: string | null;
+  /** End of this key's drain window (epoch ms) while status is "draining". */
+  drainUntil?: number | null;
+  revokedReason?: string | null;
   metadata?: Record<string, unknown>;
 }
 
@@ -191,6 +212,15 @@ export interface RelayerKeySummary {
   ageDays: number;
   lastUsedAt: string | null;
   lastRotatedAt: string | null;
+  drainUntil: string | null;
+  revokedReason: string | null;
+}
+
+/** A signature produced by a managed key that may not have landed yet. */
+export interface OutstandingSignature {
+  hash: string;
+  publicKey: string;
+  signedAt: number;
 }
 
 export interface RelayerKeyHealth {
@@ -203,6 +233,23 @@ export interface RelayerKeyHealth {
   autoRotateEnabled: boolean;
   keys: RelayerKeySummary[];
   alerts: string[];
+}
+
+/**
+ * The account whose sequence number and authority a transaction uses: the
+ * fee source for a fee bump, else the transaction source (muxed → base G...).
+ */
+export function transactionSourceAccount(tx: any): string | null {
+  const raw: string | undefined = tx?.feeSource ?? tx?.source;
+  if (!raw) return null;
+  if (raw.startsWith("M")) {
+    try {
+      return (StellarSdk as any).extractBaseAddress(raw);
+    } catch {
+      return raw;
+    }
+  }
+  return raw;
 }
 
 export type RotationCallback = (
@@ -222,10 +269,32 @@ export class RelayerKeyManager {
   private minBalanceThresholdXlm: number = 5;
   private autoRotateEnabled: boolean = true;
   private initialized = false;
+  private signingPolicy: SigningPolicy | null = null;
+  private drainWindowMs: number;
+  /** Public keys revoked in a previous process lifetime (persisted store). */
+  private persistedRevocations: Map<string, string> = new Map();
+  /** Recent signatures per key, so a compromise can report what it invalidates. */
+  private outstanding: Map<string, OutstandingSignature> = new Map();
+  private static readonly MAX_OUTSTANDING = 5_000;
+  private static readonly OUTSTANDING_TTL_MS = 10 * 60 * 1000;
 
   constructor() {
     this.minBalanceThresholdXlm = config.relayerMinBalanceXlm ?? 5;
     this.autoRotateEnabled = config.relayerAutoRotateLowBalance ?? true;
+    this.drainWindowMs = config.relayerRotationDrainWindowMs ?? 5 * 60 * 1000;
+  }
+
+  /** Install the tier/halt policy every signature must pass (#746). */
+  public setSigningPolicy(policy: SigningPolicy | null): void {
+    this.signingPolicy = policy;
+  }
+
+  public getSigningPolicy(): SigningPolicy | null {
+    return this.signingPolicy;
+  }
+
+  public setDrainWindowMs(ms: number): void {
+    this.drainWindowMs = ms;
   }
 
   /**
@@ -440,7 +509,22 @@ export class RelayerKeyManager {
   }
 
   /**
-   * Sign a transaction with the active signer and record usage.
+   * Sign a transaction with the key that owns its source account (#746).
+   *
+   * A Stellar relayer key is an account with its own sequence chain, so a
+   * transaction built against the old account must be signed by the old key
+   * even if a rotation happened between build and sign. Signing it with the
+   * newly active key (the previous behaviour) produced tx_bad_auth for every
+   * in-flight item at cutover. Rules:
+   *
+   *  - source is the active key            → sign
+   *  - source is a draining key            → sign until its drain window ends
+   *  - source is revoked / compromised     → refuse (sweep purpose excepted)
+   *  - source is an idle standby key       → refuse (it has no in-flight work)
+   *  - source is not a managed key         → the relayer is a co-signer on
+   *                                          someone else's tx: active key signs
+   *
+   * Every signature also passes the tier/halt policy when one is installed.
    */
   public async signTransaction(tx: StellarSdk.Transaction): Promise<void> {
     const active = this.getActiveKey();
@@ -450,10 +534,8 @@ export class RelayerKeyManager {
     await active.signer.signTransaction(tx);
     active.txCount++;
     active.lastUsedAt = new Date().toISOString();
-    relayerKeyTransactionsTotal.inc({
-      key_id: active.id,
-      public_key: active.publicKey,
-    });
+    // By role, not key id: ids grow with every rotation (#749).
+    relayerKeyTransactionsTotal.inc({ role: active.role });
   }
 
   /**
@@ -497,6 +579,17 @@ export class RelayerKeyManager {
       throw new Error("secretKey is required for local signer");
     }
 
+    // Re-registering a revoked identity (e.g. the compromised secret pasted
+    // back in) must not resurrect it.
+    if (
+      this.persistedRevocations.has(publicKey) ||
+      Array.from(this.keys.values()).some(
+        (k) => k.publicKey === publicKey && REVOKED_STATUSES.has(k.status),
+      )
+    ) {
+      throw new Error(`Relayer key ${publicKey} is revoked and cannot be registered`);
+    }
+
     const role: KeyRole = options.role || "secondary";
     const status: KeyStatus = options.makeActive ? "active" : "standby";
 
@@ -524,8 +617,13 @@ export class RelayerKeyManager {
     if (options.makeActive) {
       const oldActive = this.getActiveKey();
       if (oldActive && oldActive.id !== id) {
-        oldActive.status = "standby";
         oldActive.role = "secondary";
+        if (this.drainWindowMs > 0) {
+          oldActive.status = "draining";
+          oldActive.drainUntil = Date.now() + this.drainWindowMs;
+        } else {
+          oldActive.status = "standby";
+        }
       }
       this.activeKeyId = id;
       this.notifyRotation(newKey, oldActive, "register_active");
@@ -580,49 +678,45 @@ export class RelayerKeyManager {
    */
   public async rotateActiveKey(
     targetKeyIdOrPublicKey?: string,
-    trigger: "manual" | "low_balance" | "api" | "scheduled" = "manual",
+    trigger:
+      | "manual"
+      | "low_balance"
+      | "api"
+      | "scheduled"
+      | "planned"
+      | "compromise"
+      | "rollback" = "manual",
+    options: { drainPrevious?: boolean } = {},
   ): Promise<{ success: boolean; activeKey: RelayerKeySummary; previousKey: RelayerKeySummary | null }> {
     const previousActive = this.getActiveKey();
     let targetKey: RelayerManagedKey | undefined;
 
     if (targetKeyIdOrPublicKey) {
-      // Lookup by ID or Public Key
-      targetKey =
-        this.keys.get(targetKeyIdOrPublicKey) ||
-        Array.from(this.keys.values()).find(
-          (k) => k.publicKey === targetKeyIdOrPublicKey,
-        );
+      targetKey = this.findKey(targetKeyIdOrPublicKey);
       if (!targetKey) {
         relayerKeyRotationsTotal.inc({ trigger, status: "failure" });
         throw new Error(
           `Target relayer key ${targetKeyIdOrPublicKey} not found`,
         );
       }
+      // A revoked identity must never be reactivated, explicitly or not.
+      if (
+        REVOKED_STATUSES.has(targetKey.status) ||
+        this.persistedRevocations.has(targetKey.publicKey)
+      ) {
+        relayerKeyRotationsTotal.inc({ trigger, status: "failure" });
+        throw new Error(
+          `Target relayer key ${targetKey.id} is revoked and cannot be activated`,
+        );
+      }
     } else {
-      // Find candidate secondary/standby key
-      const candidates = Array.from(this.keys.values()).filter(
-        (k) =>
-          k.id !== this.activeKeyId &&
-          k.status !== "revoked" &&
-          k.status !== "deprecated" &&
-          k.status !== "exhausted",
-      );
-
-      if (candidates.length === 0) {
+      targetKey = this.bestStandby();
+      if (!targetKey) {
         relayerKeyRotationsTotal.inc({ trigger, status: "failure" });
         throw new Error(
           "No available secondary/standby relayer keys to rotate to",
         );
       }
-
-      // Prioritize keys with verified balance > threshold
-      candidates.sort((a, b) => {
-        const balA = a.balanceXlm ?? 0;
-        const balB = b.balanceXlm ?? 0;
-        return balB - balA;
-      });
-
-      targetKey = candidates[0];
     }
 
     if (previousActive && previousActive.id === targetKey.id) {
@@ -635,17 +729,27 @@ export class RelayerKeyManager {
 
     const now = new Date().toISOString();
 
-    // Demote current active key
+    // Demote current active key. By default it enters a bounded drain window
+    // (dual-identity window) so transactions already built against its
+    // account can still be signed; new work goes to the new identity.
     if (previousActive) {
+      const drain = options.drainPrevious ?? true;
       previousActive.role = "secondary";
-      previousActive.status =
-        previousActive.status === "low_balance" ? "low_balance" : "standby";
       previousActive.lastRotatedAt = now;
+      if (drain && this.drainWindowMs > 0) {
+        previousActive.status = "draining";
+        previousActive.drainUntil = Date.now() + this.drainWindowMs;
+      } else {
+        previousActive.status =
+          previousActive.status === "low_balance" ? "low_balance" : "standby";
+        previousActive.drainUntil = null;
+      }
     }
 
-    // Promote new active key
+    // Promote new active key (a draining key coming back ends its drain)
     targetKey.role = "primary";
     targetKey.status = "active";
+    targetKey.drainUntil = null;
     targetKey.activatedAt = now;
     targetKey.lastRotatedAt = now;
     this.activeKeyId = targetKey.id;
@@ -733,6 +837,14 @@ export class RelayerKeyManager {
         publicKey: key.publicKey,
         error: (err as Error).message,
       });
+      // A missing account is a definite zero, not "unknown": a null balance
+      // ranks as a viable standby and could be failed over to unfunded.
+      if (/not found/i.test((err as Error).message)) {
+        key.balanceXlm = 0;
+        key.lastBalanceCheckAt = new Date().toISOString();
+        this.updateMetrics();
+        return 0;
+      }
       return key.balanceXlm ?? 0;
     }
   }
@@ -762,6 +874,10 @@ export class RelayerKeyManager {
   public async checkAndHandleLowBalance(
     minBalanceXlm = this.minBalanceThresholdXlm,
     rpcServer?: StellarSdk.rpc.Server | { getAccount: (pk: string) => Promise<unknown> },
+    // Pass the orchestrator's planned rotation so failover gets the fence,
+    // funding preflight, drain and rollback. Without it the pointer swaps
+    // directly (kept for callers that have no orchestrator, e.g. unit tests).
+    rotate?: () => Promise<unknown>,
   ): Promise<{ rotated: boolean; activePublicKey: string; balanceXlm: number | null }> {
     const active = this.getActiveKey();
     if (!active) {
@@ -786,6 +902,15 @@ export class RelayerKeyManager {
       });
 
       try {
+        if (rotate) {
+          await rotate();
+          const now = this.getActiveKey();
+          return {
+            rotated: now?.id !== active.id,
+            activePublicKey: now?.publicKey ?? "",
+            balanceXlm: now?.balanceXlm ?? null,
+          };
+        }
         const rotationResult = await this.rotateActiveKey(
           undefined,
           "low_balance",
@@ -871,6 +996,7 @@ export class RelayerKeyManager {
    * Get health status & summary of relayer keys for diagnostic / health endpoints.
    */
   public getKeyHealth(): RelayerKeyHealth {
+    this.expireDrains();
     const active = this.getActiveKey();
     const secondary =
       Array.from(this.keys.values()).find(
@@ -882,7 +1008,9 @@ export class RelayerKeyManager {
     );
 
     const availableStandby = allSummaries.filter(
-      (k) => k.status === "standby" || k.status === "active",
+      (k) =>
+        (k.status === "standby" || k.status === "active") &&
+        !this.persistedRevocations.has(k.publicKey),
     ).length;
 
     const alerts: string[] = [];
@@ -960,6 +1088,8 @@ export class RelayerKeyManager {
       ageDays,
       lastUsedAt: key.lastUsedAt,
       lastRotatedAt: key.lastRotatedAt,
+      drainUntil: key.drainUntil ? new Date(key.drainUntil).toISOString() : null,
+      revokedReason: key.revokedReason ?? null,
     };
   }
 
@@ -979,12 +1109,21 @@ export class RelayerKeyManager {
     }
   }
 
+  /**
+   * Per-role aggregates instead of per-key series (#749): key ids grow with
+   * every rotation. Several keys share a role, so a plain set() per key would
+   * leave whichever key came last; report the lowest balance (the one that
+   * matters for failover) and the oldest activation age.
+   */
   private updateMetrics(): void {
+    const minBalance = new Map<KeyRole, number>();
+    const maxAge = new Map<KeyRole, number>();
     for (const key of this.keys.values()) {
       if (key.balanceXlm !== null) {
-        relayerKeyBalance.set(
-          { key_id: key.id, role: key.role },
-          key.balanceXlm,
+        const prev = minBalance.get(key.role);
+        minBalance.set(
+          key.role,
+          prev === undefined ? key.balanceXlm : Math.min(prev, key.balanceXlm),
         );
       }
       if (key.activatedAt) {
@@ -992,12 +1131,11 @@ export class RelayerKeyManager {
           0,
           Math.floor((Date.now() - new Date(key.activatedAt).getTime()) / 1000),
         );
-        relayerKeyAgeSeconds.set(
-          { key_id: key.id },
-          ageSec,
-        );
+        maxAge.set(key.role, Math.max(maxAge.get(key.role) ?? 0, ageSec));
       }
     }
+    for (const [role, balance] of minBalance) relayerKeyBalance.set({ role }, balance);
+    for (const [role, age] of maxAge) relayerKeyAgeSeconds.set({ role }, age);
   }
 
   /**
@@ -1008,8 +1146,12 @@ export class RelayerKeyManager {
     this.activeKeyId = null;
     this.rotationListeners.clear();
     this.initialized = false;
+    this.persistedRevocations.clear();
+    this.outstanding.clear();
+    this.signingPolicy = null;
   }
 }
 
 // Global Singleton Instance
 export const relayerKeyManager = new RelayerKeyManager();
+setActiveKeyAgeSource(() => relayerKeyManager.getActiveKey()?.activatedAt ?? null);

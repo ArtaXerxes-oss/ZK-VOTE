@@ -1,9 +1,5 @@
-# Build context MUST be the repository root (see docker-compose.yml).
-# frontend/ alone cannot see ../circuits/build, so vote.wasm never lands in the
-# image (#645).
-
-# Build stage
-FROM node:20-alpine AS builder
+# Build stage (pinned to Node 22 to match the backend runtime ABI, #599)
+FROM node:22-alpine AS builder
 
 # Install build dependencies for native modules (usb package needs Python/gcc)
 RUN apk add --no-cache python3 make g++ linux-headers eudev-dev

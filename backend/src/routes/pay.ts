@@ -7,8 +7,9 @@ import {
   type PaymentAsset,
 } from "../services/payments.js";
 import { bodyLimit, queryLimiter, csrfOriginGuard, paymentBatchCostLimiter, masterKeyGuard } from "../middleware/index.js";
-import { log } from "../services/logger.js";
 import { batch_partial_failure_total, paymentOpsPerMinute } from "../services/metrics.js";
+import { payRequestSchema, payBatchRequestSchema } from "../validation/schemas.js";
+import { mapContractError } from "../utils/errors.js";
 
 log("info", "pay_routes_loaded", {});
 
@@ -63,11 +64,13 @@ router.post("/pay", masterKeyGuard, csrfOriginGuard, bodyLimit("5kb"), async (re
   }
   
   try {
-    const { asset, destination, amount, memo } = req.body;
-    if (!asset || !destination || !amount)
+    const parsed = payRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
       return res
         .status(400)
-        .json({ error: "asset, destination, amount required" });
+        .json({ error: parsed.error.issues[0]?.message ?? "Invalid payment request" });
+    }
+    const { asset, destination, amount, memo } = parsed.data;
     const r = await sendPayment({ asset, destination, amount, memo });
     
     // Store idempotency result
@@ -78,6 +81,10 @@ router.post("/pay", masterKeyGuard, csrfOriginGuard, bodyLimit("5kb"), async (re
     res.json(r);
   } catch (e: any) {
     log("error", "pay_error", { error: e.message });
+    const mapped = mapContractError(e);
+    if (mapped) {
+      return res.status(mapped.statusCode).json({ error: mapped.message, code: mapped.code });
+    }
     const trustlineError = /trustline|issuer authorization/i.test(String(e.message));
     res.status(trustlineError ? 409 : 500).json({
       error: trustlineError ? e.message : "Payment failed",
@@ -85,24 +92,33 @@ router.post("/pay", masterKeyGuard, csrfOriginGuard, bodyLimit("5kb"), async (re
   }
 });
 
-router.post("/pay/batch", masterKeyGuard, csrfOriginGuard, bodyLimit("256kb"), paymentBatchCostLimiter, async (req, res) => {
-  // Check idempotency key
-  const idempotencyKey = req.header("Idempotency-Key");
-  if (idempotencyKey) {
-    const existing = paymentIdempotency.get(idempotencyKey);
-    if (existing) {
-      log("info", "batch_idempotent_hit", { idempotencyKey: idempotencyKey.slice(0, 16), hash: existing.hash });
-      return res.status(200).json({ hash: existing.hash, idempotent: true });
-    }
-  }
-  
+import {
+  batch_partial_failure_total,
+  abuseDetectionTotal,
+  abusePatternConfidence,
+  suspiciousPaymentVolume,
+  paymentDestinationFanout,
+} from "../services/metrics.js";
+import { 
+  analyzeBatchPayment, 
+  recordAbuseDetection,
+  AbusePattern 
+} from "../services/abuseDetection.js";
+
+router.post("/pay/batch", csrfOriginGuard, bodyLimit("256kb"), async (req, res) => {
   try {
-    const { ops } = req.body;
-    if (!Array.isArray(ops))
-      return res.status(400).json({ error: "ops array required" });
+    const parsed = payBatchRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.issues[0]?.message ?? "ops array required" });
+    }
+    const { ops } = parsed.data;
 
     // Record ops per minute metric
     paymentOpsPerMinute.observe(ops.length);
+    
+    // Record destination fanout for mule detection
+    const uniqueDestinations = new Set(ops.map((op: any) => op.destination)).size;
+    paymentDestinationFanout.observe(uniqueDestinations);
     
     // Apply cost-based rate limiting
     const costFn = (req as any).rateLimit?.cost;
@@ -117,6 +133,45 @@ router.post("/pay/batch", masterKeyGuard, csrfOriginGuard, bodyLimit("256kb"), p
       /^[a-zA-Z0-9_-]{1,64}$/.test(headerTenant)
         ? headerTenant
         : "default";
+    
+    // Abuse detection analysis (metadata-only, privacy-bounded)
+    const abuseResult = analyzeBatchPayment(tenantId, ops);
+    
+    if (abuseResult.suspicious) {
+      // Record metrics
+      for (const pattern of abuseResult.patterns) {
+        const confidenceLevel = abuseResult.confidence >= 0.8 ? "high" 
+          : abuseResult.confidence >= 0.5 ? "medium" : "low";
+        abuseDetectionTotal.inc({ pattern, confidence_level: confidenceLevel });
+        abusePatternConfidence.observe({ pattern }, abuseResult.confidence);
+      }
+      
+      // Record total volume of suspicious payments
+      const totalAmount = ops.reduce(
+        (sum: bigint, op: any) => sum + BigInt(Math.floor(parseFloat(op.amount) * 1e7)),
+        BigInt(0)
+      );
+      for (const pattern of abuseResult.patterns) {
+        suspiciousPaymentVolume.observe({ pattern }, Number(totalAmount));
+      }
+      
+      // Log to audit trail
+      recordAbuseDetection(abuseResult, tenantId, {
+        endpoint: "/pay/batch",
+        opsCount: ops.length,
+        uniqueDestinations,
+      });
+      
+      // For high-confidence abuse, return 403 (review required)
+      if (abuseResult.confidence >= 0.9) {
+        return res.status(403).json({
+          error: "Payment batch flagged for review due to suspicious patterns",
+          patterns: abuseResult.patterns,
+          reviewRequired: true,
+        });
+      }
+    }
+    
     const r = await sendBatch(ops, tenantId);
 
     // Store idempotency result

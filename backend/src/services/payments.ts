@@ -4,23 +4,200 @@
  */
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { config } from "../config.js";
-import { relayerKeypair } from "./stellar.js";
+import { relayerKeypair, withSequenceLock } from "./stellar.js";
 import { relayerKeyManager } from "./relayerKeyManager.js";
 import { log } from "./logger.js";
 import { getDb } from "./db.js";
-import { trustlinePreflightFailureTotal } from "./metrics.js";
+import {
+  sponsorshipReserveDepletedTotal,
+  sponsorshipReserveXlm as sponsorshipReserveGauge,
+  trustlinePreflightFailureTotal,
+} from "./metrics.js";
+import {
+  createEndpointPool,
+  HttpStatusError,
+  parseRetryAfterMs,
+  poolOptionsFromConfig,
+  type OperationClass,
+  type ProbeResult,
+} from "./endpoint-pool.js";
 import {
   canonicalizeStellarAmount,
   horizonStroopsToSorobanAmount,
   parseStroops,
 } from "../utils/stellarAmount.js";
 
-const horizonServer = new (StellarSdk.Horizon as any).Server(
-  (config as any).horizonUrl || "https://horizon-testnet.stellar.org",
-);
-log("info", "payments_loaded", {});
+// ── Horizon endpoint pool (#745) ─────────────────────────────────────────
+//
+// HORIZON_URL / HORIZON_URLS form one pool. Per-operation rules come from
+// FALLBACK_MATRIX: trustline lookups are plain reads, the relayer account
+// load that supplies a sequence number is a consistent read (fresh endpoints
+// only), quotes must be fresh, and submissions resend the same signed
+// envelope (hash-idempotent) to another endpoint on failure.
+
+function horizonRoot(url: string): string {
+  return url.endsWith("/") ? url : `${url}/`;
+}
+
+/** Horizon's root reports the ledger it serves and how far ingestion trails core. */
+export async function probeHorizon(url: string): Promise<ProbeResult> {
+  const res = await fetch(horizonRoot(url));
+  if (!res.ok) {
+    throw new HttpStatusError(res.status, `Horizon root returned HTTP ${res.status}`);
+  }
+  const body: any = await res.json();
+  const history = Number(body.history_latest_ledger);
+  const core = Number(body.core_latest_ledger);
+  if (!Number.isFinite(history)) throw new Error("Horizon root missing history_latest_ledger");
+  return {
+    ledger: history,
+    ingestLagLedgers: Number.isFinite(core) ? Math.max(0, core - history) : 0,
+  };
+}
+
+export const horizonPool = createEndpointPool({
+  dependency: "horizon",
+  serviceName: "horizon",
+  urls: config.horizonUrls,
+  clientFactory: (url) => new (StellarSdk.Horizon as any).Server(url),
+  probe: (_client, url) => probeHorizon(url),
+  ...poolOptionsFromConfig(config),
+});
+log("info", "payments_loaded", { horizonEndpoints: horizonPool.urls.length });
+
+function loadAccount(accountId: string, opClass: OperationClass = "read"): Promise<any> {
+  return horizonPool.execute(opClass, (server: any) => server.loadAccount(accountId));
+}
+
+/**
+ * Submit a signed envelope through the pool. If every attempt failed, check
+ * whether an earlier ambiguous attempt (timeout / 504) actually landed before
+ * reporting failure: a resend to a second endpoint then returns tx_bad_seq,
+ * and surfacing that as a failure would invite the caller to pay twice.
+ */
+async function submitToHorizon(tx: StellarSdk.Transaction): Promise<any> {
+  try {
+    return await horizonPool.execute("submit_idempotent", (server: any) =>
+      server.submitTransaction(tx),
+    );
+  } catch (err) {
+    const hash = tx.hash().toString("hex");
+    const landed: any = await horizonPool
+      .execute("read", (server: any) =>
+        server.transactions().transaction(hash).call(),
+      )
+      .catch(() => null);
+    if (landed?.successful) {
+      log("warn", "horizon_submit_recovered_landed_tx", { hash });
+      return landed;
+    }
+    throw err;
+  }
+}
+
+// ── Sponsorship reserve (#540) ───────────────────────────────────────────
+// Each sponsored claimable-balance / M... destination locks 0.5 XLM reserve on
+// the sponsor account until claimed or reclaimed.
+export const CLAIMABLE_BALANCE_RESERVE_XLM = 0.5;
+export const MAX_MUXED_DESTINATIONS_PER_BATCH = 100;
+
+let sponsorshipReserveXlm = 0;
+
+export function getSponsorshipReserveXlm(): number {
+  return sponsorshipReserveXlm;
+}
+
+export function resetSponsorshipReserveForTests(): void {
+  sponsorshipReserveXlm = 0;
+}
+
+/** Pre-flight reserve check: sponsor must cover locked reserves + batch fees. */
+export async function checkSponsorshipReserve(newSponsorships: number): Promise<void> {
+  sponsorshipReserveGauge.set(sponsorshipReserveXlm);
+  if (newSponsorships === 0) return;
+  const account: any = await loadAccount(relayerKeypair.publicKey()).catch(() => null);
+  const native = account?.balances?.find((b: any) => b.asset_type === "native");
+  const available = native
+    ? parseFloat(native.balance) - parseFloat(native.selling_liabilities || "0")
+    : Number.MAX_SAFE_INTEGER;
+  const required = newSponsorships * CLAIMABLE_BALANCE_RESERVE_XLM;
+  if (available < sponsorshipReserveXlm + required + 1) {
+    sponsorshipReserveDepletedTotal.inc();
+    throw new Error(
+      `Insufficient sponsorship reserve: have ${available} XLM, locked ${sponsorshipReserveXlm} XLM, need +${required} XLM`,
+    );
+  }
+}
+
+export function noteSponsorshipCreated(count = 1): void {
+  sponsorshipReserveXlm += count * CLAIMABLE_BALANCE_RESERVE_XLM;
+  sponsorshipReserveGauge.set(sponsorshipReserveXlm);
+}
+
+export function noteSponsorshipReleased(count = 1): void {
+  sponsorshipReserveXlm = Math.max(
+    0,
+    sponsorshipReserveXlm - count * CLAIMABLE_BALANCE_RESERVE_XLM,
+  );
+  sponsorshipReserveGauge.set(sponsorshipReserveXlm);
+}
 
 export type PaymentAsset = "XLM" | "USDC" | "EURC";
+
+// ── Asset risk registry (SPIKE-099 / #765) ───────────────────────────────
+//
+// Classifies supported assets by liquidity depth and counterparty exposure so
+// the onboarding workflow can gate which assets appear for each risk tier and
+// the compliance layer can flag high-risk routes automatically.
+//
+// TIER_1 — liquid, natively supported; no extra friction.
+// TIER_2 — mid-depth DEX pool; warn user about slippage on large orders.
+// TIER_3 — illiquid or high-counterparty-risk; require explicit confirmation
+//           and block automated batch routes.
+
+export type AssetRiskTier = "TIER_1" | "TIER_2" | "TIER_3";
+
+export interface AssetRiskProfile {
+  code: string;
+  tier: AssetRiskTier;
+  /** Human-readable note shown to support and compliance tooling — never the user. */
+  internalNote: string;
+  /** True when the asset is enabled for the automated relayer path. */
+  relayerEnabled: boolean;
+}
+
+export const ASSET_RISK_REGISTRY: AssetRiskProfile[] = [
+  {
+    code: "XLM",
+    tier: "TIER_1",
+    internalNote: "Native asset; no counterparty risk; deepest liquidity.",
+    relayerEnabled: true,
+  },
+  {
+    code: "USDC",
+    tier: "TIER_1",
+    internalNote: "Circle-issued USDC on Stellar; high liquidity; stable.",
+    relayerEnabled: true,
+  },
+  {
+    code: "EURC",
+    tier: "TIER_2",
+    internalNote: "Circle-issued EURC; growing Stellar pool; slippage risk on >$50k orders.",
+    relayerEnabled: true,
+  },
+];
+
+export function getAssetRiskProfile(code: string): AssetRiskProfile | undefined {
+  return ASSET_RISK_REGISTRY.find((p) => p.code === code);
+}
+
+export function assertRelayerEnabled(code: string): void {
+  const profile = getAssetRiskProfile(code);
+  if (!profile) throw new Error(`Asset ${code} is not in the supported-asset registry.`);
+  if (!profile.relayerEnabled) {
+    throw new Error(`Asset ${code} (${profile.tier}) is not enabled for the automated relayer path.`);
+  }
+}
 
 const ISSUERS: Record<PaymentAsset, string | null> = {
   XLM: null,
@@ -87,7 +264,7 @@ export async function getTrustlineStatus(
   }
 
   const asset = getAsset(assetCode);
-  const account = await (horizonServer as any).loadAccount(baseAccountId(accountId));
+  const account = await loadAccount(baseAccountId(accountId));
   const line = findTrustline(account, asset);
   const exists = Boolean(line);
   const authorized = exists && line.is_authorized !== false;
@@ -144,16 +321,18 @@ export async function ensureRelayerTrustline(
     throw new Error(`${assetCode} relayer trustline is awaiting issuer authorization`);
   }
 
-  const account = await (horizonServer as any).loadAccount(relayer);
-  const tx = new StellarSdk.TransactionBuilder(account, {
-    fee: "10000",
-    networkPassphrase: config.networkPassphrase,
-  })
-    .addOperation(StellarSdk.Operation.changeTrust({ asset: getAsset(assetCode) }))
-    .setTimeout(30)
-    .build();
-  await relayerKeyManager.signTransaction(tx);
-  await (horizonServer as any).submitTransaction(tx);
+  await withSequenceLock(async () => {
+    const account = await loadAccount(relayer, "consistent_read");
+    const tx = new StellarSdk.TransactionBuilder(account, {
+      fee: "10000",
+      networkPassphrase: config.networkPassphrase,
+    })
+      .addOperation(StellarSdk.Operation.changeTrust({ asset: getAsset(assetCode) }))
+      .setTimeout(30)
+      .build();
+    await relayerKeyManager.signTransaction(tx);
+    await submitToHorizon(tx);
+  });
 
   status = await getTrustlineStatus(relayer, assetCode);
   if (!status.ready) {
@@ -209,45 +388,47 @@ export async function sendPayment(op: PaymentOp): Promise<{ hash: string }> {
     await ensureRelayerTrustline(op.asset);
     await assertDestinationTrustline(dest, op.asset);
   }
-  const account = await (horizonServer as any).loadAccount(
-    relayerKeypair.publicKey(),
-  );
-  const tx = new StellarSdk.TransactionBuilder(account, {
-    fee: "10000",
-    networkPassphrase: config.networkPassphrase,
-  })
-    .addOperation(
-      StellarSdk.Operation.payment({ destination: dest, asset, amount }),
-    )
-    .setTimeout(30)
-    .build();
-  if (op.memo) (tx as any).addMemo?.(StellarSdk.Memo.text(op.memo));
-  await relayerKeyManager.signTransaction(tx);
-  try {
-    const res: any = await (horizonServer as any).submitTransaction(tx);
-    log("info", "payment_sent", {
-      asset: op.asset,
-      amount,
-      dest: dest.slice(0, 8) + "...",
-      hash: res.hash,
-    });
-    return { hash: res.hash };
-  } catch (e: any) {
-    const data = e.response?.data || e.response?.body || e.message;
-    const extras = (data as any)?.extras;
-    log("error", "payment_failed", {
-      asset: op.asset,
-      amount,
-      dest: dest.slice(0, 8) + "...",
-      error: JSON.stringify(data).slice(0, 1000),
-      extras: extras ? JSON.stringify(extras).slice(0, 1000) : undefined,
-    });
-    throw new Error(
-      typeof data === "string"
-        ? data
-        : JSON.stringify(data).slice(0, 500) || e.message,
-    );
-  }
+  // Build + sign + submit hold the sequence lock so a concurrent payment or a
+  // key rotation cannot interleave on the relayer's sequence number.
+  return withSequenceLock(async () => {
+    const account = await loadAccount(relayerKeypair.publicKey(), "consistent_read");
+    const tx = new StellarSdk.TransactionBuilder(account, {
+      fee: "10000",
+      networkPassphrase: config.networkPassphrase,
+    })
+      .addOperation(
+        StellarSdk.Operation.payment({ destination: dest, asset, amount }),
+      )
+      .setTimeout(30)
+      .build();
+    if (op.memo) (tx as any).addMemo?.(StellarSdk.Memo.text(op.memo));
+    await relayerKeyManager.signTransaction(tx);
+    try {
+      const res: any = await submitToHorizon(tx);
+      log("info", "payment_sent", {
+        asset: op.asset,
+        amount,
+        dest: dest.slice(0, 8) + "...",
+        hash: res.hash,
+      });
+      return { hash: res.hash };
+    } catch (e: any) {
+      const data = e.response?.data || e.response?.body || e.message;
+      const extras = (data as any)?.extras;
+      log("error", "payment_failed", {
+        asset: op.asset,
+        amount,
+        dest: dest.slice(0, 8) + "...",
+        error: JSON.stringify(data).slice(0, 1000),
+        extras: extras ? JSON.stringify(extras).slice(0, 1000) : undefined,
+      });
+      throw new Error(
+        typeof data === "string"
+          ? data
+          : JSON.stringify(data).slice(0, 500) || e.message,
+      );
+    }
+  });
 }
 
 /**
@@ -275,6 +456,10 @@ export async function sendBatch(
 ): Promise<BatchResult> {
   if (ops.length === 0) throw new Error("No ops");
   if (ops.length > 100) throw new Error("Batch max 100 ops");
+  const muxedCount = ops.filter((o) => o.destination?.startsWith("M")).length;
+  if (muxedCount > MAX_MUXED_DESTINATIONS_PER_BATCH) {
+    throw new Error("MuxedAccount limit exceeded");
+  }
   const opsJson = JSON.stringify(ops);
   const hash = StellarSdk.hash(
     Buffer.from(`${tenantId}:${opsJson}`, "utf8"),
@@ -310,6 +495,7 @@ export async function sendBatch(
       await assertDestinationTrustline(op.destination, op.asset);
     }
   }
+  await checkSponsorshipReserve(muxedCount);
 
   try {
     db.prepare(
@@ -328,6 +514,30 @@ export async function sendBatch(
     throw err;
   }
 
+  // The whole batch build + sign + submit holds the sequence lock.
+  return withSequenceLock(async () => {
+    const account = await loadAccount(relayerKeypair.publicKey(), "consistent_read");
+    const builder = new StellarSdk.TransactionBuilder(account, {
+      fee: (10000 * ops.length).toString(),
+      networkPassphrase: config.networkPassphrase,
+    });
+    for (const op of ops) {
+      const asset = getAsset(op.asset);
+      builder.addOperation(
+        StellarSdk.Operation.payment({
+          destination: op.destination,
+          asset,
+          amount: canonicalizeStellarAmount(op.amount),
+        }),
+      );
+    }
+    const tx = builder.setTimeout(30).build();
+    await relayerKeyManager.signTransaction(tx);
+    const res: any = await submitToHorizon(tx);
+    log("info", "batch_sent", { ops: ops.length, hash: res.hash });
+    if (muxedCount > 0) noteSponsorshipCreated(muxedCount);
+    return { hash: res.hash, ops: ops.length };
+  });
   const account = await (horizonServer as any).loadAccount(
     relayerKeypair.publicKey(),
   );
@@ -347,9 +557,37 @@ export async function sendBatch(
   }
   const tx = builder.setTimeout(30).build();
   await relayerKeyManager.signTransaction(tx);
-  const res: any = await (horizonServer as any).submitTransaction(tx);
-  log("info", "batch_sent", { ops: ops.length, hash: res.hash });
-  return { hash: res.hash, ops: ops.length };
+
+  // SPIKE-027: Enhanced error context for batch failures
+  try {
+    const res: any = await (horizonServer as any).submitTransaction(tx);
+    log("info", "batch_sent", { ops: ops.length, hash: res.hash });
+    if (muxedCount > 0) {
+      noteSponsorshipCreated(muxedCount);
+      const { sponsorshipReserveXlm: gauge } = await import("./metrics.js");
+      gauge.set(getSponsorshipReserveXlm());
+    }
+    return { hash: res.hash, ops: ops.length };
+  } catch (e: any) {
+    const data = e.response?.data || e.response?.body || e.message;
+    const extras = (data as any)?.extras;
+    const resultCodes = extras?.result_codes;
+
+    log("error", "batch_payment_failed", {
+      batchSize: ops.length,
+      error: JSON.stringify(data).slice(0, 1000),
+      resultCodes: resultCodes ? JSON.stringify(resultCodes) : undefined,
+    });
+
+    // Provide actionable error message with operation-level detail when available
+    throw new Error(
+      resultCodes
+        ? `Batch payment failed: ${JSON.stringify(resultCodes)}`
+        : typeof data === "string"
+          ? data
+          : JSON.stringify(data).slice(0, 500) || e.message
+    );
+  }
 }
 
 /**
@@ -369,6 +607,12 @@ export async function swapStrictSend(
   destination: string,
 ): Promise<{ hash: string }> {
   if (sendAsset === destAsset) throw new Error("Swap assets must be distinct");
+
+  // SPIKE-027: Validate slippage parameters before execution
+  if (!destMin || destMin === "0") {
+    throw new Error("Slippage protection required: destMin must be > 0");
+  }
+
   const sendA = getAsset(sendAsset);
   const destA = getAsset(destAsset);
   const canonicalSendAmount = canonicalizeStellarAmount(sendAmount);
@@ -383,6 +627,28 @@ export async function swapStrictSend(
       await assertDestinationTrustline(destination, destAsset);
     }
   }
+  return withSequenceLock(async () => {
+    const account = await loadAccount(relayerKeypair.publicKey(), "consistent_read");
+    const tx = new StellarSdk.TransactionBuilder(account, {
+      fee: "10000",
+      networkPassphrase: config.networkPassphrase,
+    })
+      .addOperation(
+        StellarSdk.Operation.pathPaymentStrictSend({
+          sendAsset: sendA,
+          sendAmount: canonicalSendAmount,
+          destination,
+          destAsset: destA,
+          destMin: canonicalDestMin,
+          path: [],
+        } as any),
+      )
+      .setTimeout(30)
+      .build();
+    await relayerKeyManager.signTransaction(tx);
+    const res: any = await submitToHorizon(tx);
+    return { hash: res.hash };
+  });
   const account = await (horizonServer as any).loadAccount(
     relayerKeypair.publicKey(),
   );
@@ -403,8 +669,44 @@ export async function swapStrictSend(
     .setTimeout(30)
     .build();
   await relayerKeyManager.signTransaction(tx);
-  const res: any = await (horizonServer as any).submitTransaction(tx);
-  return { hash: res.hash };
+
+  // SPIKE-027: Enhanced error handling for swap failures with slippage context
+  try {
+    const res: any = await (horizonServer as any).submitTransaction(tx);
+    log("info", "swap_executed", {
+      sendAsset,
+      destAsset,
+      sendAmount: canonicalSendAmount,
+      destMin: canonicalDestMin,
+      hash: res.hash,
+    });
+    return { hash: res.hash };
+  } catch (e: any) {
+    const data = e.response?.data || e.response?.body || e.message;
+    const extras = (data as any)?.extras;
+    const resultCodes = extras?.result_codes;
+
+    log("error", "swap_failed", {
+      sendAsset,
+      destAsset,
+      sendAmount: canonicalSendAmount,
+      destMin: canonicalDestMin,
+      error: JSON.stringify(data).slice(0, 1000),
+      resultCodes: resultCodes ? JSON.stringify(resultCodes) : undefined,
+    });
+
+    // Check if failure was due to slippage (path payment underfunded)
+    const isSlippageError = resultCodes?.operations?.includes("op_under_dest_min");
+    throw new Error(
+      isSlippageError
+        ? `Swap failed: slippage exceeded (received less than destMin ${destMin})`
+        : resultCodes
+          ? `Swap failed: ${JSON.stringify(resultCodes)}`
+          : typeof data === "string"
+            ? data
+            : JSON.stringify(data).slice(0, 500) || e.message
+    );
+  }
 }
 
 /**
@@ -433,9 +735,6 @@ export async function quoteStrictSend(
   const destA = getAsset(destAsset);
   const canonicalSendAmount = canonicalizeStellarAmount(sendAmount);
   const sendStroops = parseStroops(canonicalSendAmount);
-  // Horizon Server strictSendPaths
-  const horizonUrl =
-    (config as any).horizonUrl || "https://horizon-testnet.stellar.org";
   const params = new URLSearchParams({
     source_account: relayerKeypair.publicKey(),
     send_asset_type: sendA.isNative() ? "native" : "credit_alphanum4",
@@ -447,11 +746,21 @@ export async function quoteStrictSend(
       : `${destA.getCode()}:${destA.getIssuer()}`,
   });
   try {
-    const url = `${horizonUrl}/paths/strict-send?${params.toString()}`;
-    const res = await fetch(url);
-    if (!res.ok)
-      throw new Error(`Horizon strict-send returned HTTP ${res.status}`);
-    const j: any = await res.json();
+    // Quotes only come from endpoints within the finality-lag bound: a
+    // lagging order book yields a destMin the live book cannot honour.
+    const j: any = await horizonPool.execute("quote", async (_server, { url }) => {
+      const res = await fetch(
+        `${horizonRoot(url)}paths/strict-send?${params.toString()}`,
+      );
+      if (!res.ok) {
+        throw new HttpStatusError(
+          res.status,
+          `Horizon strict-send returned HTTP ${res.status}`,
+          parseRetryAfterMs(res.headers.get("retry-after")),
+        );
+      }
+      return res.json();
+    });
     if (j._embedded && j._embedded.records && j._embedded.records[0]) {
       const r = j._embedded.records[0];
       const destStroops = parseStroops(String(r.destination_amount));

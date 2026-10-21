@@ -60,11 +60,16 @@ import {
   relayerKeypair,
   getPendingSequenceLockOps,
   waitForSequenceLockIdle,
+  stopCoverTraffic,
 } from "./services/stellar.js";
 import {
   startConfirmationWorker,
   stopConfirmationWorker,
 } from "./services/confirmation-queue.js";
+import {
+  startEndpointHealthMonitor,
+  stopEndpointHealthMonitor,
+} from "./services/endpoint-pool.js";
 import {
   attachConfirmationHub,
   closeConfirmationHub,
@@ -292,6 +297,10 @@ const corsOptions: cors.CorsOptions = {
     "X-Client-Id",
     "X-Master-Key",
     "X-CSRF-Token",
+    // Wallet-session binding for /vote (#750)
+    "X-Vote-Session",
+    "X-Vote-Session-Mac",
+    "X-Vote-Network",
   ],
   exposedHeaders: [
     "X-Token-Id",
@@ -500,6 +509,7 @@ const supervisor = new ServiceSupervisor();
 async function gracefulShutdown(reason: string): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
+  stopCoverTraffic();
 
   const DRAIN_TIMEOUT_MS = config.shutdownDrainTimeoutMs;
   log("info", "shutdown_start", {
@@ -715,6 +725,14 @@ async function startBackgroundServices(): Promise<void> {
   // Dedicated confirmation worker (#172): single poller for all outstanding
   // transaction-confirmation waits, with exponential backoff + jitter.
   startConfirmationWorker();
+
+  // Probe Horizon, Soroban RPC and anchor pools on one cadence so routing,
+  // finality-lag bounds and /health reflect live endpoint state (#745).
+  if (!config.testMode) {
+    startEndpointHealthMonitor(config.endpointHealthIntervalMs);
+  }
+  // Closes relayer drain windows on time even when no admin call polls (#746).
+  relayerRotation.startTicker();
 }
 
 /**
@@ -745,9 +763,11 @@ async function stopBackgroundServices(): Promise<void> {
   stopScheduledBackups();
   services.scheduler.stop();
   stopAuthScheduler();
+  stopEndpointHealthMonitor();
 
   // Drain any outstanding confirmation waits so callers never hang on exit.
   void stopConfirmationWorker();
+  relayerRotation.stopTicker();
 }
 
 /**
