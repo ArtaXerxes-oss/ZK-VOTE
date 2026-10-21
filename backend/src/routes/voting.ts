@@ -23,7 +23,7 @@ import {
   callWithTimeout,
   simulateWithBackoff,
   waitForTransaction,
-  withSequenceLock,
+  withVoteSequenceLock,
   acquireSequenceLockForSubmit,
   releaseLockForConfirmation,
   sequenceManager,
@@ -883,7 +883,7 @@ router.post(
 
       // Serialize account fetch + build + simulate + sign + submit under sequence lock
       // to prevent nonce race conditions between concurrent requests
-      const { sendResult, result } = await withSequenceLock(async () => {
+      const { sendResult, result } = await withVoteSequenceLock(async () => {
         // Get relayer account
         const account = await (server as StellarSdk.rpc.Server).getAccount(
           relayerKeypair.publicKey(),
@@ -1102,7 +1102,7 @@ router.post(
         scVotes,
       );
 
-      const { sendResult, result } = await withSequenceLock(async () => {
+      const { sendResult, result } = await withVoteSequenceLock(async () => {
         const account = await (server as StellarSdk.rpc.Server).getAccount(
           relayerKeypair.publicKey(),
         );

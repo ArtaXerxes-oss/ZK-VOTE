@@ -4,7 +4,7 @@
  */
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { config } from "../config.js";
-import { relayerKeypair, withSequenceLock } from "./stellar.js";
+import { relayerKeypair, withPaymentSequenceLock } from "./stellar.js";
 import { relayerKeyManager } from "./relayerKeyManager.js";
 import { log } from "./logger.js";
 import { getDb } from "./db.js";
@@ -327,7 +327,7 @@ export async function ensureRelayerTrustline(
     throw new Error(`${assetCode} relayer trustline is awaiting issuer authorization`);
   }
 
-  await withSequenceLock(async () => {
+  await withPaymentSequenceLock(async () => {
     const account = await loadAccount(relayer, "consistent_read");
     const tx = new StellarSdk.TransactionBuilder(account, {
       fee: "10000",
@@ -396,7 +396,7 @@ export async function sendPayment(op: PaymentOp): Promise<{ hash: string }> {
   }
   // Build + sign + submit hold the sequence lock so a concurrent payment or a
   // key rotation cannot interleave on the relayer's sequence number.
-  return withSequenceLock(async () => {
+  return withPaymentSequenceLock(async () => {
     const account = await loadAccount(relayerKeypair.publicKey(), "consistent_read");
     const tx = new StellarSdk.TransactionBuilder(account, {
       fee: "10000",
@@ -541,7 +541,7 @@ export async function sendBatch(
   }
 
   // The whole batch build + sign + submit holds the sequence lock.
-  return withSequenceLock(async () => {
+  return withPaymentSequenceLock(async () => {
     const account = await loadAccount(relayerKeypair.publicKey(), "consistent_read");
     const builder = new StellarSdk.TransactionBuilder(account, {
       fee: feeEstimate.recommendedForOps.toString(),
@@ -618,7 +618,7 @@ export async function swapStrictSend(
       await assertDestinationTrustline(destination, destAsset);
     }
   }
-  return withSequenceLock(async () => {
+  return withPaymentSequenceLock(async () => {
     const account = await loadAccount(relayerKeypair.publicKey(), "consistent_read");
     const tx = new StellarSdk.TransactionBuilder(account, {
       fee: "10000",
