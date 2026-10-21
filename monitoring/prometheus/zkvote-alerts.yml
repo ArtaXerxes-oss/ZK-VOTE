@@ -180,158 +180,190 @@ groups:
             network-reset runbook immediately: stop the relayer, wipe processed_events,
             remove the horizon cursor file, then restart and verify sequence is climbing.
 
-  # ── Product SLI/SLO alerts (SPIKE-049) ─────────────────────────────────────
-  #
-  # The alerts below cover the user-visible journeys that were previously
-  # unmonitored: vote inclusion latency, ZK proving success rate, anchor
-  # settlement aging, and PII-in-logs detection.
-  #
-  # Runbooks:
-  #   VoteInclusionLatencyHigh  → check relayer queue depth, Stellar congestion,
-  #                               fee-bump pipeline; escalate to on-call if >15 min
-  #   ProvingSuccessRateLow     → check prover worker logs, circuit WASM hash vs
-  #                               registry pin, WebWorker memory pressure
-  #   AnchorSettlementStale     → check bridge relayer, EVM RPC endpoint, gas price
-  #   PIIDetectedInLogs         → page security on-call immediately; rotate log
-  #                               storage credentials; purge affected log batch
-
-  - name: zkvote-product-slo
+  # ── External endpoint pools (#745) ─────────────────────────────────────
+  # Horizon, Soroban RPC and anchor pools. `dependency` is horizon,
+  # soroban_rpc, anchor_usdc or anchor_eurc; `endpoint` is a URL origin.
+  - name: zkvote-endpoints
     rules:
-      - alert: ZKVoteVoteInclusionLatencyHigh
-        # SLO: 95% of votes should be included within 30 seconds of submission.
-        # zkvote_vote_inclusion_latency_seconds tracks time from relayer receipt
-        # to on-chain confirmation.
-        expr: >
-          histogram_quantile(0.95,
-            sum by (le) (rate(zkvote_vote_inclusion_latency_seconds_bucket[10m]))
-          ) > 30
-        for: 5m
-        labels:
-          severity: warning
-          service: zkvote-relayer
-          slo: vote_inclusion
-        annotations:
-          summary: Vote inclusion p95 latency exceeds 30-second SLO
-          description: >
-            The 95th-percentile vote inclusion latency has exceeded 30 seconds for 5
-            minutes. Check the relayer submission queue, Stellar congestion, and the
-            fee-bump pipeline.
-
-      - alert: ZKVoteVoteInclusionLatencyCritical
-        expr: >
-          histogram_quantile(0.95,
-            sum by (le) (rate(zkvote_vote_inclusion_latency_seconds_bucket[10m]))
-          ) > 900
-        for: 5m
+      - alert: ZKVoteDependencyNoEligibleEndpoint
+        expr: zkvote_dependency_available_endpoints == 0 and zkvote_dependency_total_endpoints > 0
+        for: 2m
         labels:
           severity: critical
           service: zkvote-relayer
-          slo: vote_inclusion
         annotations:
-          summary: Vote inclusion p95 latency exceeds 15-minute critical threshold
+          summary: "{{ $labels.dependency }} has no eligible endpoint"
           description: >
-            The 95th-percentile vote inclusion latency has exceeded 15 minutes for 5
-            minutes. Votes may be silently dropped or stuck in the submission queue.
-            Escalate to on-call immediately.
+            Every configured {{ $labels.dependency }} endpoint is down, rate-limited
+            or breaker-open, so its money path is halted. Runbook: check
+            /health endpointPools for per-endpoint breakerState and
+            cooldownRemainingMs; confirm upstream status pages; add a provider to
+            HORIZON_URLS / SOROBAN_RPC_URLS / ANCHOR_*_URLS and restart if one
+            provider is down for longer than its SLA.
 
-      - alert: ZKVoteProvingSuccessRateLow
-        # SLO: ZK proof generation should succeed at ≥99% of attempts.
-        # zkvote_prove_total{result="success|failure"} tracks prover outcomes.
-        expr: >
-          sum(rate(zkvote_prove_total{result="success"}[10m])) /
-          clamp_min(sum(rate(zkvote_prove_total[10m])), 0.001) < 0.99
-        for: 5m
+      - alert: ZKVoteDependencyWithoutRedundancy
+        expr: zkvote_dependency_total_endpoints{dependency=~"horizon|soroban_rpc"} < 2
+        for: 1h
         labels:
           severity: warning
-          service: zkvote-prover
-          slo: proving_success
-        annotations:
-          summary: ZK proving success rate has dropped below 99% SLO
-          description: >
-            Fewer than 99% of ZK proof attempts are succeeding over the last 10
-            minutes. Check prover worker logs, WASM circuit hash against the circuit
-            registry pin, and WebWorker memory pressure.
-
-      - alert: ZKVoteProvingSuccessRateCritical
-        expr: >
-          sum(rate(zkvote_prove_total{result="success"}[10m])) /
-          clamp_min(sum(rate(zkvote_prove_total[10m])), 0.001) < 0.90
-        for: 3m
-        labels:
-          severity: critical
-          service: zkvote-prover
-          slo: proving_success
-        annotations:
-          summary: ZK proving success rate has collapsed below 90%
-          description: >
-            Fewer than 90% of ZK proof attempts are succeeding. The voting feature
-            is effectively broken for most users. Escalate to on-call immediately
-            and consider disabling the frontend proving flow.
-
-      - alert: ZKVoteAnchorSettlementStale
-        # SLO: Bridge anchor settlements should complete within 10 minutes of
-        # EVM event emission.
-        # zkvote_anchor_settlement_age_seconds tracks age of the oldest unsettled anchor.
-        expr: zkvote_anchor_settlement_age_seconds > 600
-        for: 5m
-        labels:
-          severity: warning
-          service: zkvote-bridge
-          slo: anchor_settlement
-        annotations:
-          summary: Bridge anchor settlement is aging beyond 10-minute SLO
-          description: >
-            The oldest unsettled bridge anchor is more than 10 minutes old. Check the
-            bridge relayer, EVM RPC endpoint health, and gas price estimates.
-
-      - alert: ZKVoteAnchorSettlementCritical
-        expr: zkvote_anchor_settlement_age_seconds > 3600
-        for: 5m
-        labels:
-          severity: critical
-          service: zkvote-bridge
-          slo: anchor_settlement
-        annotations:
-          summary: Bridge anchor settlement stalled for over 1 hour
-          description: >
-            A bridge anchor has been unsettled for over 1 hour. Cross-chain votes
-            submitted through the bridge are not being recorded. Escalate immediately.
-
-      - alert: ZKVotePIIDetectedInLogs
-        # zkvote_pii_log_detections_total is incremented by the log-scrubber
-        # middleware whenever a raw IP address, Stellar address (G.../S...), or
-        # full nullifier value is detected in a log line that was not redacted.
-        # Any non-zero rate is a policy violation requiring immediate response.
-        expr: sum(rate(zkvote_pii_log_detections_total[5m])) > 0
-        for: 1m
-        labels:
-          severity: critical
           service: zkvote-relayer
-          pii: "true"
         annotations:
-          summary: PII detected in application logs — immediate action required
+          summary: "{{ $labels.dependency }} is configured with a single endpoint"
           description: >
-            The log-scrubber middleware has detected unredacted PII (voter IP,
-            Stellar address, nullifier, or other sensitive field) in application
-            logs. Page the security on-call immediately. Rotate log storage
-            credentials and purge the affected log batch before sharing with
-            any third party.
+            A single {{ $labels.dependency }} endpoint is a single point of failure for
+            votes and payments. Runbook: configure at least two independent providers
+            in HORIZON_URLS / SOROBAN_RPC_URLS.
 
-      - alert: ZKVoteDevRelayerObservabilityGap
-        # Detects when the dev:relayer process is running but emitting zero
-        # metrics — a sign the observability instrumentation is not active in
-        # the local development profile (SPIKE-049).
-        expr: >
-          up{job="zkvote-dev-relayer"} == 1
-          and sum(rate(zkvote_http_requests_total{env="development"}[5m])) == 0
+      - alert: ZKVoteDependencyDegraded
+        expr: zkvote_dependency_available_endpoints < zkvote_dependency_total_endpoints
         for: 10m
+  # ── Bounded-label alerts with log drill-down (#749) ─────────────────────
+  # Metrics carry bounded labels only (backend/src/services/metric-cardinality.ts).
+  # Per-DAO / per-client detail is on `event="metric_drilldown"` log records
+  # with the same metric name and labels, joined to traces by traceId.
+  - name: zkvote-cardinality
+    rules:
+      - alert: ZKVoteMetricCardinalityOverflow
+        expr: sum by (metric, label) (increase(zkvote_metric_cardinality_overflow_total[10m])) > 0
         labels:
           severity: warning
           service: zkvote-relayer
         annotations:
-          summary: dev:relayer is running but emitting no metrics
+          summary: "{{ $labels.dependency }} is running with reduced redundancy"
           description: >
-            The development relayer process is running but the Prometheus scrape
-            target shows no request metrics. The metrics middleware may not be
-            registered in the development profile. Developers will not see the
-            observability signals that production depends on.
+            At least one {{ $labels.dependency }} endpoint has been ineligible for 10
+            minutes; traffic is served by the rest. Runbook: find the endpoint with
+            zkvote_endpoint_healthy == 0 and check its provider; no action is needed
+            while another endpoint remains eligible.
+
+      - alert: ZKVoteEndpointLedgerLag
+        expr: max by (dependency, endpoint) (zkvote_endpoint_ledger_lag) > 5
+          summary: "{{ $labels.metric }} hit its cardinality budget ({{ $labels.label }})"
+          description: >
+            New label values for {{ $labels.metric }} are collapsing into
+            "__overflow__". Either a dimension is being minted (attack, scan) or
+            new code added an unbounded value. Runbook: check recent deploys for
+            new label values; if traffic-driven, find the source with
+            event="metric_drilldown" metric="{{ $labels.metric }}".
+
+      - alert: ZKVoteRootFetchFailures
+        expr: sum by (reason) (rate(zkvote_root_fetch_failures_total[5m])) > 0.2
+        for: 5m
+        labels:
+          severity: warning
+          service: zkvote-relayer
+        annotations:
+          summary: "{{ $labels.endpoint }} trails the {{ $labels.dependency }} tip by {{ $value }} ledgers"
+          description: >
+            The endpoint is past ENDPOINT_MAX_FINALITY_LAG_LEDGERS and is excluded
+            from witness, sequence and quote reads. Runbook: if all endpoints lag,
+            check network status before raising the bound; never raise it to make
+            a lagging provider eligible for witness reads.
+
+      - alert: ZKVoteStaleReadsRejected
+        expr: sum by (dependency, op_class) (increase(zkvote_endpoint_stale_rejected_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: critical
+          service: zkvote-relayer
+        annotations:
+          summary: "{{ $labels.dependency }} {{ $labels.op_class }} reads refused: no fresh endpoint"
+          description: >
+            Reads that feed witnesses, sequence numbers or quotes are failing closed
+            because no endpoint is within the finality-lag bound. Runbook: same as
+            ZKVoteEndpointLedgerLag; votes and payments resume automatically once a
+            fresh endpoint is available.
+
+      - alert: ZKVoteEndpointDisagreement
+        expr: sum by (dependency) (increase(zkvote_endpoint_disagreement_total[10m])) > 0
+        labels:
+          severity: critical
+          service: zkvote-relayer
+        annotations:
+          summary: "{{ $labels.dependency }} endpoints returned different state at the same ledger"
+          description: >
+            Two fresh endpoints disagreed about the same ledger and the read failed
+            closed. This indicates a fork, a provider bug or a malicious endpoint.
+            Runbook: grep relayer logs for endpoint_disagreement, compare both
+            providers against a third source, and remove the faulty endpoint from
+            the pool.
+
+      - alert: ZKVoteEndpointFailoverSpike
+        expr: sum by (dependency) (rate(zkvote_endpoint_failover_total[5m])) > 0.1
+        for: 10m
+          summary: "Merkle root reads failing ({{ $labels.reason }})"
+          description: >
+            Voters cannot fetch roots to build witnesses. Drill-down:
+            event="metric_drilldown" metric="zkvote_root_fetch_failures_total"
+            labels.reason="{{ $labels.reason }}" → group by dao_id to find the
+            affected DAOs → open a traceId for the failing RPC call.
+
+      - alert: ZKVoteWebSocketRateLimitSpike
+        expr: rate(zkvote_ws_rate_limit_total[5m]) > 5
+        for: 5m
+        labels:
+          severity: warning
+          service: zkvote-relayer
+        annotations:
+          summary: WebSocket connections are being rate-limited at a high rate
+          description: >
+            Aggregate only (no per-IP series). Drill-down:
+            event="metric_drilldown" metric="zkvote_ws_rate_limit_total" →
+            group by client (hashed IP) to identify the sources.
+
+      - alert: ZKVoteCrossTenantDenials
+        expr: sum by (resource_type, reason) (increase(zkvote_cross_tenant_denial_total[10m])) > 10
+        labels:
+          severity: warning
+          service: zkvote-relayer
+        annotations:
+          summary: "{{ $labels.dependency }} calls are repeatedly failing over"
+          description: >
+            Calls succeed only after rerouting; latency is elevated by the
+            zkvote_endpoint_failover_latency_seconds distribution. Runbook: identify
+            the failing endpoint via zkvote_endpoint_requests_total by outcome.
+
+      - alert: ZKVoteEndpointRateLimited
+        expr: sum by (dependency, endpoint) (rate(zkvote_endpoint_requests_total{outcome="rate_limited"}[5m])) > 0.5
+        for: 10m
+          summary: "Cross-tenant denials on {{ $labels.resource_type }} ({{ $labels.reason }})"
+          description: >
+            Possible registry spoofing. Drill-down: event="metric_drilldown"
+            metric="zkvote_cross_tenant_denial_total" → group by dao_id and caller.
+
+      - alert: ZKVoteUnpinnedRegistryRejections
+        expr: sum by (endpoint, reason) (increase(zkvote_unauthenticated_rejection_total[10m])) > 10
+        labels:
+          severity: warning
+          service: zkvote-relayer
+        annotations:
+          summary: "{{ $labels.endpoint }} is rate-limiting the relayer"
+          description: >
+            The endpoint keeps answering 429. It is cooled down per Retry-After and
+            traffic sheds to peers. Runbook: request a higher quota or add a
+            provider; do not raise ENDPOINT_RETRY_BUDGET_RATIO.
+
+      - alert: ZKVoteEndpointRetryBudgetExhausted
+        expr: sum by (dependency) (increase(zkvote_endpoint_retry_budget_exhausted_total[5m])) > 0
+        for: 5m
+          summary: "Unauthenticated rejections at {{ $labels.endpoint }} ({{ $labels.reason }})"
+          description: >
+            Drill-down: event="metric_drilldown"
+            metric="zkvote_unauthenticated_rejection_total" → group by dao_id.
+
+      - alert: ZKVoteRelayerStandbyBalanceLow
+        expr: min by (role) (zkvote_relayer_key_balance_xlm{role=~"secondary|standby"}) < 10
+        for: 30m
+        labels:
+          severity: warning
+          service: zkvote-relayer
+        annotations:
+          summary: "{{ $labels.dependency }} retry budget exhausted"
+          description: >
+            Retries are being suppressed to avoid a retry storm, so transient
+            failures now reach users. Runbook: treat as a dependency outage; see
+            ZKVoteDependencyDegraded.
+          summary: "Lowest {{ $labels.role }} relayer key balance is {{ $value }} XLM"
+          description: >
+            Per-role aggregate (no per-key series). Runbook: GET
+            /admin/relayer/keys lists each key's balance; fund the low one.

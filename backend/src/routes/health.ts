@@ -44,8 +44,9 @@ import { getWalHealth } from "../services/walResilience.js";
 import { checkRotationHealth, getSecretBackend } from "../services/secrets/index.js";
 import { relayerKeyManager } from "../services/relayerKeyManager.js";
 
-import { rpcPoolManager, sequenceManager } from "../services/stellar.js";
+import { rpcPoolManager, sequenceManager, getSequenceContentionMetrics } from "../services/stellar.js";
 import { getAllCircuitBreakerMetrics } from "../services/circuit-breaker.js";
+import { getEndpointPoolStatuses } from "../services/endpoint-pool.js";
 import { getMemorySnapshot } from "../services/memory-monitor.js";
 import {
   getOverallHealth,
@@ -208,6 +209,8 @@ router.get("/health", async (req: Request, res: Response) => {
       ...rpc,
       pool: rpcPoolManager.getMetrics(),
     },
+    // Horizon + anchor pools (#745): per-endpoint eligibility, lag, breaker.
+    endpointPools: getEndpointPoolStatuses(),
     circuitBreakers: getAllCircuitBreakerMetrics(),
     services,
     memory: {
@@ -229,6 +232,7 @@ router.get("/health", async (req: Request, res: Response) => {
       base.treeContract = config.treeContractId;
       base.vkVersion = config.staticVkVersion;
       base.rateLimits = getRateLimitMetrics();
+      base.sequenceContention = getSequenceContentionMetrics();
       base.membershipVerification = getMembershipVerificationMetrics();
     }
   }

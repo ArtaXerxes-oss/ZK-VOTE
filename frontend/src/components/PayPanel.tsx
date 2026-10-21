@@ -3,6 +3,7 @@ import { Button } from "./ui/Button";
 import { relayerFetch, generateIdempotencyKey } from "../lib/api";
 import { isAllowedMessageOrigin } from "../lib/messageOrigin";
 import { canonicalizeStellarAmount } from "../lib/stellarAmount";
+import { useSessionBoundForm } from "../hooks/useWalletSession";
 
 type Asset = "XLM" | "USDC" | "EURC";
 
@@ -21,6 +22,9 @@ export default function PayPanel() {
   const [trustlineMessage, setTrustlineMessage] = useState<string | null>(null);
   const [pending, setPending] = useState<PendingPayment | null>(null);
   const pendingPaymentRef = useRef<PendingPayment | null>(null);
+  // A payment filled in under one wallet session must be reviewed again
+  // after an account or network switch before it is sent (#750).
+  const { blockReason } = useSessionBoundForm([asset, dest, amount, memo]);
 
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
@@ -91,6 +95,8 @@ export default function PayPanel() {
 
   const send = async () => {
     if (!dest) return alert("Destination required (G... or M...)");
+    const sessionBlock = blockReason();
+    if (sessionBlock) return alert(sessionBlock);
     const canonicalAmount = canonicalizeStellarAmount(amount);
     if (!(await checkDestinationTrustline())) return;
     
@@ -141,6 +147,8 @@ export default function PayPanel() {
 
   const sendBatch = async () => {
     if (!dest) return alert("Destination required (G... or M...)");
+    const sessionBlock = blockReason();
+    if (sessionBlock) return alert(sessionBlock);
     const canonicalAmount = canonicalizeStellarAmount(amount);
     if (!(await checkDestinationTrustline())) return;
     const ops = Array.from({ length: 3 }, () => ({

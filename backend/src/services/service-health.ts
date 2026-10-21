@@ -28,6 +28,10 @@ export type ServiceState = "healthy" | "degraded" | "unavailable";
 
 export type ServiceName =
   | "soroban_rpc"
+  | "horizon"
+  | "anchor_usdc"
+  | "anchor_eurc"
+  | "swap_quotes"
   | "sqlite"
   | "ipfs"
   | "comments"
@@ -70,6 +74,22 @@ const SERVICE_META: Record<
   soroban_rpc: {
     tier: "critical",
     description: "Soroban RPC for voting and proposal queries",
+  },
+  horizon: {
+    tier: "critical",
+    description: "Horizon for payments, swaps and account state",
+  },
+  anchor_usdc: {
+    tier: "important",
+    description: "USDC anchor for SEP-6/31 on/off-ramp",
+  },
+  anchor_eurc: {
+    tier: "important",
+    description: "EURC anchor for SEP-6/31 on/off-ramp",
+  },
+  swap_quotes: {
+    tier: "important",
+    description: "Swap quotes (Horizon strict-send, Soroswap fallback)",
   },
   sqlite: {
     tier: "important",
