@@ -3983,6 +3983,12 @@ impl Voting {
         }
         if proposal.state != ProposalState::Closed {
             proposal.state = ProposalState::Closed;
+            // Freeze Trailing-mode results: record the ledger timestamp at which
+            // the tally became final.  All result consumers (rewards, randomness,
+            // upgrades) must treat the tally as immutable once this is set.
+            if proposal.vote_mode == VoteMode::Trailing {
+                proposal.trailing_finalized_at = Some(env.ledger().timestamp());
+            }
             env.storage().persistent().set(&key, &proposal);
             Self::bump_persistent(&env, &key);
             ProposalClosedEvent {
